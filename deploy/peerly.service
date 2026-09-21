@@ -1,0 +1,20 @@
+[Unit]
+Description=peerly save server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=peerly
+Group=peerly
+EnvironmentFile=/etc/peerly/env
+ExecStart=/usr/local/bin/peerly-server -addr 127.0.0.1:8787 -data /var/lib/peerly
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/peerly
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,203 @@
+import json, os, signal, subprocess, sys, time, urllib.request
+from pathlib import Path
+from playwright.sync_api import sync_playwright, expect
+
+S = Path(os.environ["PEERLY_E2E_DIR"])
+SERVER = "127.0.0.1:18790"
+APP = "http://127.0.0.1:47820"
+save = S / "Game" / "Saves"
+save.mkdir(parents=True)
+(save / "base.sav").write_text("day1;")
+(save / "base.sav.bak").write_text("old backup")
+(save / "notes.txt").write_text("not part of the world")
+
+env = dict(os.environ, PEERLY_ADMIN_KEY="k", PEERLY_CONFIG_DIR=str(S / "cfg"))
+server = subprocess.Popen([S / "bin/server", "-addr", SERVER, "-data", S / "data"], env=env, stderr=open(S / "server.log", "w"))
+app = subprocess.Popen([S / "bin/app", "-port", "47820", "-no-browser"], env=env, stderr=open(S / "app.log", "w"))
+time.sleep(1.2)
+results = []
+def check(name, condition, detail=""):
+    results.append((name, bool(condition), detail))
+    print(("PASS " if condition else "FAIL ") + name + (" :: " + str(detail) if detail and not condition else ""), flush=True)
+
+alerts = []
+junk = []
+def scan(page, where):
+    text = page.locator("body").inner_text()
+    for word in ("null", "undefined", "NaN", "[object"):
+        if word in text:
+            junk.append(f"{where}: {word}")
+try:
+    with sync_playwright() as p:
+        browser = p.chromium.launch(channel="chrome", headless=True)
+        page = browser.new_page(viewport={"width": 940, "height": 900})
+        page.on("dialog", lambda d: (alerts.append(d.message), d.dismiss()))
+        errors = []
+        page.on("pageerror", lambda e: errors.append(str(e)))
+        page.goto(APP)
+        expect(page.locator("#toast.show.error")).to_contain_text("access key", timeout=10000)
+        check("a tab opened without the per-run access key is refused with an explanation", True)
+        key = (S / "cfg" / "ui-key").read_text()
+        page.close()
+        page = browser.new_page(viewport={"width": 940, "height": 900})
+        page.on("dialog", lambda d: (alerts.append(d.message), d.dismiss()))
+        page.on("pageerror", lambda e: errors.append(str(e)))
+        page.goto(APP + "/#key=" + key)
+        check("access key is removed from the address bar after it is stored", "key=" not in page.url, page.url)
+        page.get_by_role("button", name="Create a group").click()
+
+        page.get_by_label("Server address").fill("127.0.0.1:1")
+        page.get_by_label("Group name").fill("Friday crew")
+        page.get_by_label("Your name").fill("sara")
+        page.get_by_role("button", name="Create group").click()
+        toast = page.locator("#toast.show.error")
+        expect(toast).to_be_visible(timeout=25000)
+        check("wrong server address gives a readable, persistent error", "No peerly server answers" in toast.inner_text(), toast.inner_text())
+        time.sleep(4.5)
+        check("error toast does not vanish on its own", toast.is_visible())
+        check("typed values survive the failed attempt and re-render", page.get_by_label("Group name").input_value() == "Friday crew")
+        toast.get_by_role("button", name="Dismiss").click()
+
+        page.get_by_label("Server address").fill(SERVER)
+        page.get_by_label("Server admin key").fill(" k ")
+        page.get_by_role("button", name="Create group").click()
+        expect(page.get_by_role("heading", name="Friday crew")).to_be_visible(timeout=15000)
+        check("server address without scheme and padded admin key are accepted", True)
+
+        page.locator("#root").get_by_role("button", name="Add world").click()
+        page.locator("select[name=preset]").select_option(label="Other game")
+        page.get_by_label("World name, exactly as the save is named in the game").fill("base")
+        page.get_by_label("Game name").fill("Fake Game")
+        page.get_by_label("Save folder").fill(str(save))
+        page.get_by_label("Files that belong to this world").fill("{world}.typo, !*.bak")
+        page.locator("#dialog").get_by_role("button", name="Add world").click()
+        expect(page.get_by_role("heading", name="base on this PC")).to_be_visible(timeout=10000)
+        preview = page.locator(".preview")
+        expect(preview).to_contain_text("No files match", timeout=5000)
+        check("typo in filter: preview says nothing matches and lists the real files", "base.sav" in preview.inner_text() and "notes.txt" in preview.inner_text(), preview.inner_text())
+        page.screenshot(path=str(S / "shots/1-settings-typo.png"))
+        scan(page, "settings dialog")
+
+        page.get_by_label("Files that belong to this world").fill("BASE.*, !*.bak")
+        expect(preview).to_contain_text("1 file", timeout=5000)
+        text = preview.inner_text()
+        check("fixed filter (different letter case): exactly the world file is selected", "base.sav" in text and "2 other files are left alone" in text, text)
+
+        page.get_by_label("Launch command or steam:// link").fill("steam://rungameid/892970")
+        page.get_by_role("button", name="Save", exact=True).click()
+        expect(toast).to_be_visible(timeout=5000)
+        box = toast.bounding_box()
+        on_top = page.evaluate("([x, y]) => { const e = document.elementFromPoint(x, y); return !!e && !!e.closest('#toast'); }", [box["x"] + box["width"] / 2, box["y"] + box["height"] / 2])
+        check("error toast is visible ON TOP of the open dialog", on_top and "process name" in toast.inner_text(), toast.inner_text())
+        check("settings dialog stays open after a rejected save", page.get_by_role("heading", name="base on this PC").is_visible())
+        toast.get_by_role("button", name="Dismiss").click()
+
+        page.get_by_label("Launch command or steam:// link").fill(f"sleep 10; printf 'played;' >> '{save}/base.sav'; sleep 1")
+        page.screenshot(path=str(S / "shots/2-settings-ok.png"))
+        page.get_by_role("button", name="Save", exact=True).click()
+        expect(page.locator("dialog[open]")).to_have_count(0, timeout=5000)
+
+        page.locator("#root").get_by_role("button", name="Add world").click()
+        page.locator("select[name=preset]").select_option(label="Other game")
+        evil = "<img src=x onerror=alert(1)>"
+        page.get_by_label("World name, exactly as the save is named in the game").fill(evil)
+        page.get_by_label("Save folder").fill(str(save))
+        page.locator("#dialog").get_by_role("button", name="Add world").click()
+        expect(page.get_by_role("heading", name=evil + " on this PC")).to_be_visible(timeout=10000)
+        page.get_by_role("button", name="Cancel").click()
+        time.sleep(0.5)
+        check("hostile world name is shown as text, no script ran, no <img> injected", not alerts and page.locator("img").count() == 0 and page.get_by_role("heading", name=evil).count() == 1, alerts)
+
+        card = page.locator(".card", has=page.get_by_role("heading", name="base", exact=True))
+        card.get_by_role("button", name="Host", exact=True).click()
+        expect(page.get_by_role("heading", name="Start the group's world from this PC?")).to_be_visible(timeout=5000)
+        check("first host asks before uploading and names the size", "1 file" in page.locator("dialog").inner_text())
+        page.screenshot(path=str(S / "shots/3-first-host-confirm.png"))
+        scan(page, "first host confirm")
+        page.get_by_role("button", name="Upload and continue").click()
+        expect(card.locator(".badge.mine")).to_be_visible(timeout=10000)
+        expect(card.get_by_placeholder("Join code or address your friends need")).to_be_visible(timeout=10000)
+        check("other world's Host is blocked with an explanation while this PC hosts", page.locator(".card", has=page.get_by_role("heading", name=evil)).get_by_role("button", name="Host", exact=True).get_attribute("title").startswith("This PC is busy"))
+        check("settings are locked while hosting", card.get_by_role("button", name="Settings").is_disabled())
+
+        join = card.get_by_placeholder("Join code or address your friends need")
+        join.click()
+        join.type("ABC", delay=30)
+        time.sleep(4.6)
+        join.type("-123", delay=30)
+        check("typing in the join field survives background refreshes", join.input_value() == "ABC-123", join.input_value())
+        card.get_by_role("button", name="Share").click()
+
+        expect(page.locator("#toast.show")).to_contain_text("Shared with the group", timeout=5000)
+        time.sleep(1.0)
+        stop = card.get_by_role("button", name="Stop hosting")
+        handle = stop.element_handle()
+        time.sleep(4.5)
+        check("buttons are not rebuilt by background refreshes (a click can never land on a dead button)", handle.evaluate("node => node.isConnected"))
+        stop.click()
+        expect(page.get_by_role("heading", name="The game is still running")).to_be_visible(timeout=5000)
+        page.screenshot(path=str(S / "shots/4-stop-guard.png"))
+        scan(page, "stop guard while hosting")
+        page.get_by_role("button", name="Cancel").click()
+        check("stop while the game runs is guarded and cancel keeps hosting", card.locator(".badge.mine").is_visible())
+
+        expect(card.locator(".log")).to_contain_text("done, anyone in the group can host now", timeout=30000)
+        expect(card.locator(".badge.free")).to_be_visible(timeout=10000)
+        log = card.locator(".log").inner_text()
+        check("session log tells the whole story", all(s in log for s in ["you hold the host lease", "initial world uploaded", "game started", "game closed", "session end uploaded"]), log)
+        page.screenshot(path=str(S / "shots/5-after-session.png"), full_page=True)
+
+        card.get_by_role("button", name="History").click()
+        expect(page.get_by_role("heading", name="base history")).to_be_visible(timeout=5000)
+        items = page.locator(".history .item")
+        check("history lists both saves and marks the current one", items.count() == 2 and items.first.locator(".badge.free").count() == 1, items.count())
+        page.screenshot(path=str(S / "shots/6-history.png"))
+        scan(page, "history")
+        page.get_by_role("button", name="Close").click()
+
+        (save / "base.sav").write_text("day1;played;and more progress made without peerly;")
+        card.get_by_role("button", name="Sync only").click()
+        expect(page.get_by_role("heading", name="This PC has progress that was never uploaded")).to_be_visible(timeout=10000)
+        page.screenshot(path=str(S / "shots/8-unuploaded-progress.png"))
+        scan(page, "unuploaded progress dialog")
+        page.get_by_role("button", name="Make it the group's latest save").click()
+        expect(card.locator(".log")).to_contain_text("progress made on this PC since the last sync", timeout=20000)
+        expect(card.locator(".log")).to_contain_text("done, anyone in the group can host now", timeout=20000)
+        synclog = card.locator(".log").inner_text()
+        check("confirmed local progress becomes the group's latest save without starting the game", "progress made on this PC since the last sync uploaded" in synclog and "game started" not in synclog, synclog)
+
+        page.get_by_role("button", name="Group and invites").click()
+        scan(page, "group dialog")
+        invite = page.locator("pre.mono").inner_text()
+        check("invite text carries server address and code together", "http://127.0.0.1:18790" in invite and "Invite code:" in invite, invite)
+        page.get_by_role("button", name="New invite code").click()
+        page.get_by_role("button", name="New code").click()
+        time.sleep(1)
+        page.get_by_role("button", name="Group and invites").click()
+        check("owner can rotate the invite code", page.locator("pre.mono").inner_text() != invite)
+        page.get_by_role("button", name="Close").click()
+
+        second = subprocess.run([S / "bin/app", "-port", "47820", "-no-browser"], env=env, capture_output=True, text=True, timeout=15)
+        check("second app instance defers to the running one", second.returncode == 0 and "already running" in second.stderr, second.stderr[-200:])
+
+        server.send_signal(signal.SIGTERM); server.wait(timeout=10)
+        expect(page.locator(".banner", has_text="Cannot reach the server")).to_be_visible(timeout=20000)
+        check("server outage: worlds stay listed from the last known state", page.get_by_role("heading", name="base", exact=True).is_visible())
+        check("server outage: Host is disabled with a reason", card.get_by_role("button", name="Host", exact=True).is_disabled() and "cannot be reached" in card.get_by_role("button", name="Host", exact=True).get_attribute("title"))
+        page.screenshot(path=str(S / "shots/7-outage.png"))
+
+        scan(page, "outage")
+        check("no stray null/undefined/NaN text anywhere in the UI", not junk, junk)
+        check("session log uses correct grammar", "1 file)" in log and "1 files" not in log, log)
+        check("no uncaught JavaScript errors during the whole run", not errors, errors)
+        browser.close()
+finally:
+    for proc in (app, server):
+        if proc.poll() is None:
+            proc.send_signal(signal.SIGTERM)
+            try: proc.wait(timeout=10)
+            except Exception: proc.kill()
+
+failed = [r for r in results if not r[1]]
+print(f"\n{len(results) - len(failed)} passed, {len(failed)} failed")
+sys.exit(1 if failed else 0)
