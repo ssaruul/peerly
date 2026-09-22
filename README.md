@@ -41,7 +41,24 @@ Put Caddy in front for HTTPS: install Caddy, copy `deploy/Caddyfile` to `/etc/ca
 
 Oracle Cloud blocks ports 80 and 443 in two places, the VCN security list and the instance's own iptables. The installer prints the exact commands.
 
-Data lives in `/var/lib/peerly` (one SQLite file plus one file per save). Back up that folder. The server keeps the 20 most recent session saves, 3 mid-session backups and 30 branch saves per world, and removes older ones.
+Data lives in `/var/lib/peerly` (one SQLite file plus one file per save). To back it up while the server runs:
+
+```sh
+sudo -u peerly /usr/local/bin/peerly-server -data /var/lib/peerly -backup /var/backups/peerly
+```
+
+This writes a consistent copy of the database and every save into a dated folder. Restoring is copying that folder back to `/var/lib/peerly` and restarting the service. The server keeps the 20 most recent session saves, 3 mid-session backups and 30 branch saves per world, and removes older ones.
+
+When you upgrade the server binary, the database is migrated on start. A database written by a newer server is refused rather than damaged.
+
+**If the group owner disappears** (lost PC, left without handing over), nobody can invite or approve any more. The person with the admin key fixes that from any PC with the command line client:
+
+```sh
+peerly-cli admin-groups  -server https://saves.example.com -admin-key KEY
+peerly-cli admin-recover -server https://saves.example.com -admin-key KEY -group GROUP_ID -as yourname
+```
+
+That PC becomes the group's owner. Owners can avoid this by handing the group over in **Group and invites**, **Make owner**, before they leave.
 
 ## Use the app
 
@@ -62,6 +79,8 @@ Windows SmartScreen warns about programs it has not seen before, because the fil
 
 **Sync only** uploads progress made on this PC and downloads the latest save without starting the game.
 
+The group owner is the only one who can invite, approve, remove members and hand the group to someone else (**Make owner**). Do that hand-over before leaving the group.
+
 ### Things that go wrong with games, not with peerly
 
 - **Steam Cloud** can put an old save back after peerly replaced it. Turn Steam Cloud off for the game, or for Valheim move the world to local storage first.
@@ -77,6 +96,8 @@ Windows SmartScreen warns about programs it has not seen before, because the fil
 - The launch command suggested by whoever added a world is never run on your PC unless you accept it yourself. Only plain `steam://` and Epic launcher links are pre-filled.
 - A save downloaded from the group can only write files that match your own file filter.
 - The browser version accepts requests only from its own page, with a key that changes every run.
+- One PC runs one copy of peerly at a time, and the server refuses to let the same member host the same world from two windows or PCs at once. After a crash, the restarted app takes over automatically about a minute later.
+- Joining and group creation are rate limited per address, so invite codes cannot be guessed.
 
 ## What it does not protect you from
 

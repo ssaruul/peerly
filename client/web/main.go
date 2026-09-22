@@ -94,6 +94,12 @@ func main() {
 	if err := os.WriteFile(keyPath, []byte(accessKey), 0o600); err != nil {
 		log.Fatal(err)
 	}
+	unlock, err := core.LockDir(configDir)
+	if err != nil {
+		listener.Close()
+		log.Fatal(err)
+	}
+	defer unlock()
 	if err := config.CleanTemp(); err != nil {
 		log.Printf("could not clean temporary files: %v", err)
 	}

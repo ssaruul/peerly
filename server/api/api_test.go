@@ -211,10 +211,42 @@ func TestHostHandoffOverHTTP(t *testing.T) {
 		t.Fatalf("outsider promote = %d", status)
 	}
 
+	if status, _ := anonymous.do("GET", "/admin/groups", nil, nil); status != http.StatusForbidden {
+		t.Fatalf("admin listing without key = %d", status)
+	}
+	status, payload = anonymous.do("GET", "/admin/groups", nil, map[string]string{"X-Admin-Key": "secret"})
+	if groups := decode[[]proto.AdminGroup](t, payload); status != http.StatusOK || len(groups) != 2 {
+		t.Fatalf("admin listing = %d %s", status, payload)
+	}
+	if status, _ := clientB.do("POST", "/groups/owner", proto.TransferRequest{MemberID: sessionB.Member.ID}, nil); status != http.StatusForbidden {
+		t.Fatalf("member making themselves owner = %d", status)
+	}
 	if status, _ := clientA.do("DELETE", "/members/"+sessionB.Member.ID, nil, nil); status != http.StatusNoContent {
 		t.Fatalf("owner removes b = %d", status)
 	}
 	if status, _ := clientB.do("GET", "/worlds", nil, nil); status != http.StatusUnauthorized {
 		t.Fatalf("removed member still has access = %d", status)
+	}
+}
+
+func TestJoinAttemptsAreRateLimited(t *testing.T) {
+	dataDir := t.TempDir()
+	database, _ := store.Open(filepath.Join(dataDir, "test.db"))
+	defer database.Close()
+	blobDir, _ := blobs.Open(dataDir)
+	server := httptest.NewServer((&Server{Store: database, Blobs: blobDir, MaxUpload: 1 << 20}).Handler())
+	defer server.Close()
+	client := &testClient{t: t, baseURL: server.URL}
+	limited := 0
+	for range 40 {
+		if status, _ := client.do("POST", "/groups/join", proto.JoinGroupRequest{InviteCode: "GUESSING", DisplayName: "x"}, map[string]string{"X-Forwarded-For": "203.0.113.9"}); status == http.StatusTooManyRequests {
+			limited++
+		}
+	}
+	if limited == 0 {
+		t.Fatal("40 guesses in a row were never rate limited")
+	}
+	if status, _ := client.do("POST", "/groups/join", proto.JoinGroupRequest{InviteCode: "GUESSING", DisplayName: "x"}, map[string]string{"X-Forwarded-For": "203.0.113.10"}); status == http.StatusTooManyRequests {
+		t.Fatal("another address was limited too")
 	}
 }

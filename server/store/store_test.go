@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"path/filepath"
 	"strings"
@@ -92,7 +93,7 @@ func TestConcurrentAcquireHasOneWinner(t *testing.T) {
 		waitGroup.Add(1)
 		go func() {
 			defer waitGroup.Done()
-			_, err := f.store.AcquireLease(context.Background(), member, f.world.ID)
+			_, err := f.store.AcquireLease(context.Background(), member, f.world.ID, "s")
 			var held *LeaseHeldError
 			mutex.Lock()
 			defer mutex.Unlock()
@@ -114,15 +115,15 @@ func TestConcurrentAcquireHasOneWinner(t *testing.T) {
 func TestExpiredLeaseIsReclaimableAndTokenIncreases(t *testing.T) {
 	f := newFixture(t, 2)
 	ctx := context.Background()
-	first, err := f.store.AcquireLease(ctx, f.members[0], f.world.ID)
+	first, err := f.store.AcquireLease(ctx, f.members[0], f.world.ID, "s")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.store.AcquireLease(ctx, f.members[1], f.world.ID); err == nil {
+	if _, err := f.store.AcquireLease(ctx, f.members[1], f.world.ID, "s"); err == nil {
 		t.Fatal("second member acquired a live lease")
 	}
 	f.clock = f.clock.Add(f.store.LeaseTTL + time.Second)
-	second, err := f.store.AcquireLease(ctx, f.members[1], f.world.ID)
+	second, err := f.store.AcquireLease(ctx, f.members[1], f.world.ID, "s")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,14 +138,14 @@ func TestExpiredLeaseIsReclaimableAndTokenIncreases(t *testing.T) {
 func TestHeartbeatKeepsLeaseAlive(t *testing.T) {
 	f := newFixture(t, 2)
 	ctx := context.Background()
-	lease, _ := f.store.AcquireLease(ctx, f.members[0], f.world.ID)
+	lease, _ := f.store.AcquireLease(ctx, f.members[0], f.world.ID, "s")
 	for range 5 {
 		f.clock = f.clock.Add(f.store.LeaseTTL - time.Second)
 		if _, err := f.store.Heartbeat(ctx, f.members[0], f.world.ID, lease.FencingToken); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := f.store.AcquireLease(ctx, f.members[1], f.world.ID); err == nil {
+	if _, err := f.store.AcquireLease(ctx, f.members[1], f.world.ID, "s"); err == nil {
 		t.Fatal("lease was taken despite heartbeats")
 	}
 }
@@ -152,7 +153,7 @@ func TestHeartbeatKeepsLeaseAlive(t *testing.T) {
 func TestHandoffAdvancesMain(t *testing.T) {
 	f := newFixture(t, 2)
 	ctx := context.Background()
-	leaseA, _ := f.store.AcquireLease(ctx, f.members[0], f.world.ID)
+	leaseA, _ := f.store.AcquireLease(ctx, f.members[0], f.world.ID, "s")
 	revisionA := f.commit(t, f.members[0], leaseA.BaseRevisionID, leaseA.FencingToken)
 	if revisionA.Branch != proto.MainBranch {
 		t.Fatalf("first commit branch = %s", revisionA.Branch)
@@ -162,7 +163,7 @@ func TestHandoffAdvancesMain(t *testing.T) {
 		t.Fatalf("checkpoint branch = %s", checkpoint.Branch)
 	}
 	f.store.ReleaseLease(ctx, f.members[0], f.world.ID, leaseA.FencingToken)
-	leaseB, err := f.store.AcquireLease(ctx, f.members[1], f.world.ID)
+	leaseB, err := f.store.AcquireLease(ctx, f.members[1], f.world.ID, "s")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,10 +179,10 @@ func TestHandoffAdvancesMain(t *testing.T) {
 func TestStaleHostBecomesFork(t *testing.T) {
 	f := newFixture(t, 2)
 	ctx := context.Background()
-	leaseA, _ := f.store.AcquireLease(ctx, f.members[0], f.world.ID)
+	leaseA, _ := f.store.AcquireLease(ctx, f.members[0], f.world.ID, "s")
 	base := f.commit(t, f.members[0], "", leaseA.FencingToken)
 	f.clock = f.clock.Add(f.store.LeaseTTL + time.Second)
-	leaseB, _ := f.store.AcquireLease(ctx, f.members[1], f.world.ID)
+	leaseB, _ := f.store.AcquireLease(ctx, f.members[1], f.world.ID, "s")
 	revisionB := f.commit(t, f.members[1], base.ID, leaseB.FencingToken)
 	late := f.commit(t, f.members[0], base.ID, leaseA.FencingToken)
 	if !strings.HasPrefix(late.Branch, "fork/a/") {
@@ -207,7 +208,7 @@ func TestUploadWithoutLeaseBecomesFork(t *testing.T) {
 func TestReacquireAfterExpiryWithUnchangedHeadStaysOnMain(t *testing.T) {
 	f := newFixture(t, 2)
 	ctx := context.Background()
-	leaseA, _ := f.store.AcquireLease(ctx, f.members[0], f.world.ID)
+	leaseA, _ := f.store.AcquireLease(ctx, f.members[0], f.world.ID, "s")
 	base := f.commit(t, f.members[0], "", leaseA.FencingToken)
 	f.clock = f.clock.Add(f.store.LeaseTTL + time.Minute)
 	if _, err := f.store.Heartbeat(ctx, f.members[0], f.world.ID, leaseA.FencingToken); err != nil {
@@ -222,7 +223,7 @@ func TestReacquireAfterExpiryWithUnchangedHeadStaysOnMain(t *testing.T) {
 func TestPromotePreservesHistoryAndRespectsLease(t *testing.T) {
 	f := newFixture(t, 2)
 	ctx := context.Background()
-	leaseA, _ := f.store.AcquireLease(ctx, f.members[0], f.world.ID)
+	leaseA, _ := f.store.AcquireLease(ctx, f.members[0], f.world.ID, "s")
 	mainRevision := f.commit(t, f.members[0], "", leaseA.FencingToken)
 	fork := f.commit(t, f.members[1], "", 0)
 	var held *LeaseHeldError
@@ -260,7 +261,7 @@ func TestOtherGroupCannotSeeWorld(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.store.AcquireLease(ctx, outsider.Member, f.world.ID); !errors.Is(err, ErrNotFound) {
+	if _, err := f.store.AcquireLease(ctx, outsider.Member, f.world.ID, "s"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("outsider acquire error = %v", err)
 	}
 }
@@ -269,7 +270,7 @@ func TestRetentionKeepsNewestMainRevisionsAndForks(t *testing.T) {
 	f := newFixture(t, 2)
 	f.store.KeepMain = 3
 	ctx := context.Background()
-	lease, _ := f.store.AcquireLease(ctx, f.members[0], f.world.ID)
+	lease, _ := f.store.AcquireLease(ctx, f.members[0], f.world.ID, "s")
 	fork := f.commit(t, f.members[1], "", 0)
 	parentID := ""
 	orphanedTotal := 0
@@ -302,10 +303,10 @@ func TestRetentionKeepsNewestMainRevisionsAndForks(t *testing.T) {
 func TestSameHolderReacquireReturnsCurrentHead(t *testing.T) {
 	f := newFixture(t, 1)
 	ctx := context.Background()
-	lease, _ := f.store.AcquireLease(ctx, f.members[0], f.world.ID)
+	lease, _ := f.store.AcquireLease(ctx, f.members[0], f.world.ID, "s")
 	first := f.commit(t, f.members[0], "", lease.FencingToken)
 	checkpoint := f.commit(t, f.members[0], first.ID, lease.FencingToken)
-	again, err := f.store.AcquireLease(ctx, f.members[0], f.world.ID)
+	again, err := f.store.AcquireLease(ctx, f.members[0], f.world.ID, "s")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -318,7 +319,7 @@ func TestForkRetentionNeverTouchesMain(t *testing.T) {
 	f := newFixture(t, 2)
 	f.store.KeepForks = 2
 	ctx := context.Background()
-	lease, _ := f.store.AcquireLease(ctx, f.members[0], f.world.ID)
+	lease, _ := f.store.AcquireLease(ctx, f.members[0], f.world.ID, "s")
 	mainRevision := f.commit(t, f.members[0], "", lease.FencingToken)
 	for range 5 {
 		f.commit(t, f.members[1], "", 0)
@@ -339,7 +340,7 @@ func TestPruneKeepsHeadEvenWhenClockJumpsBack(t *testing.T) {
 	f := newFixture(t, 1)
 	f.store.KeepMain = 2
 	ctx := context.Background()
-	lease, _ := f.store.AcquireLease(ctx, f.members[0], f.world.ID)
+	lease, _ := f.store.AcquireLease(ctx, f.members[0], f.world.ID, "s")
 	parentID := ""
 	for range 3 {
 		parentID = f.commit(t, f.members[0], parentID, lease.FencingToken).ID
@@ -420,13 +421,13 @@ func TestOwnerCanRevokeMembers(t *testing.T) {
 	if err := f.store.RevokeMember(ctx, owner, owner.ID); !errors.Is(err, ErrSelf) {
 		t.Fatalf("self revoke error = %v", err)
 	}
-	if _, err := f.store.AcquireLease(ctx, friend, f.world.ID); err != nil {
+	if _, err := f.store.AcquireLease(ctx, friend, f.world.ID, "s"); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.store.RevokeMember(ctx, owner, friend.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.store.AcquireLease(ctx, owner, f.world.ID); err != nil {
+	if _, err := f.store.AcquireLease(ctx, owner, f.world.ID, "s"); err != nil {
 		t.Fatalf("revoked member's lease still blocks the world: %v", err)
 	}
 	me, _ := f.store.Me(ctx, owner)
@@ -455,7 +456,7 @@ func TestWorldNamesAreUniqueAndDeletionIsRestricted(t *testing.T) {
 	if _, err := f.store.DeleteWorld(ctx, other, second.ID); !errors.Is(err, ErrNotYours) {
 		t.Fatalf("stranger delete error = %v", err)
 	}
-	lease, _ := f.store.AcquireLease(ctx, other, second.ID)
+	lease, _ := f.store.AcquireLease(ctx, other, second.ID, "s")
 	revision := f.commitTo(t, second.ID, other, "", lease.FencingToken)
 	var held *LeaseHeldError
 	if _, err := f.store.DeleteWorld(ctx, creator, second.ID); !errors.As(err, &held) {
@@ -474,7 +475,7 @@ func TestWorldNamesAreUniqueAndDeletionIsRestricted(t *testing.T) {
 func TestLostUploadResponseDoesNotForkTheSession(t *testing.T) {
 	f := newFixture(t, 2)
 	ctx := context.Background()
-	lease, _ := f.store.AcquireLease(ctx, f.members[0], f.world.ID)
+	lease, _ := f.store.AcquireLease(ctx, f.members[0], f.world.ID, "s")
 	first := f.commit(t, f.members[0], "", lease.FencingToken)
 	retried, orphaned, err := f.store.Commit(ctx, f.members[0], CommitInput{
 		WorldID: f.world.ID, ParentID: "", FencingToken: lease.FencingToken, BlobID: NewID(), Sha256: "00", Size: 1,
@@ -489,7 +490,7 @@ func TestLostUploadResponseDoesNotForkTheSession(t *testing.T) {
 		t.Fatalf("upload with a stale parent under the same lease: %+v err %v", next, err)
 	}
 	f.store.ReleaseLease(ctx, f.members[0], f.world.ID, lease.FencingToken)
-	other, _ := f.store.AcquireLease(ctx, f.members[1], f.world.ID)
+	other, _ := f.store.AcquireLease(ctx, f.members[1], f.world.ID, "s")
 	stale := f.commit(t, f.members[1], first.ID, other.FencingToken)
 	if stale.Branch == proto.MainBranch {
 		t.Fatal("a different host with a stale parent was fast-forwarded onto main")
@@ -499,7 +500,7 @@ func TestLostUploadResponseDoesNotForkTheSession(t *testing.T) {
 func TestCheckpointsCannotPushSessionSavesOutOfHistory(t *testing.T) {
 	f := newFixture(t, 1)
 	ctx := context.Background()
-	lease, _ := f.store.AcquireLease(ctx, f.members[0], f.world.ID)
+	lease, _ := f.store.AcquireLease(ctx, f.members[0], f.world.ID, "s")
 	sessionEnd, _, _ := f.store.Commit(ctx, f.members[0], CommitInput{WorldID: f.world.ID, FencingToken: lease.FencingToken, BlobID: NewID(), Sha256: "aa", Size: 1, Note: "session end"})
 	f.clock = f.clock.Add(time.Second)
 	parentID := sessionEnd.ID
@@ -530,5 +531,129 @@ func TestOnlyAuthorOrOwnerDeletesABranchSave(t *testing.T) {
 	}
 	if _, err := f.store.DiscardFork(ctx, owner, fork.ID); err != nil {
 		t.Fatalf("owner: %v", err)
+	}
+}
+
+func TestSameMemberCannotHostFromTwoWindowsAtOnce(t *testing.T) {
+	f := newFixture(t, 1)
+	ctx := context.Background()
+	first, err := f.store.AcquireLease(ctx, f.members[0], f.world.ID, "window-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var held *LeaseHeldError
+	if _, err := f.store.AcquireLease(ctx, f.members[0], f.world.ID, "window-2"); !errors.As(err, &held) || !held.SameMember {
+		t.Fatalf("second window of the same member got the lease: %v", err)
+	}
+	f.clock = f.clock.Add(ActiveWindow / 2)
+	if _, err := f.store.Heartbeat(ctx, f.members[0], f.world.ID, first.FencingToken); err != nil {
+		t.Fatal(err)
+	}
+	f.clock = f.clock.Add(ActiveWindow / 2)
+	if _, err := f.store.AcquireLease(ctx, f.members[0], f.world.ID, "window-2"); !errors.As(err, &held) {
+		t.Fatalf("a heartbeating window was taken over: %v", err)
+	}
+	f.clock = f.clock.Add(ActiveWindow + time.Second)
+	second, err := f.store.AcquireLease(ctx, f.members[0], f.world.ID, "window-2")
+	if err != nil {
+		t.Fatalf("crashed window blocks the restart: %v", err)
+	}
+	if second.FencingToken == first.FencingToken {
+		t.Fatal("takeover kept the old fencing token, a zombie of the first window could still write main")
+	}
+	if _, err := f.store.Heartbeat(ctx, f.members[0], f.world.ID, first.FencingToken); !errors.Is(err, ErrLeaseLost) {
+		t.Fatalf("zombie heartbeat error = %v", err)
+	}
+}
+
+func TestOwnershipTransferAndRecovery(t *testing.T) {
+	f := newFixture(t, 3)
+	ctx := context.Background()
+	owner, heir, other := f.members[0], f.members[1], f.members[2]
+	if err := f.store.TransferOwnership(ctx, heir, other.ID); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("non-owner transfer error = %v", err)
+	}
+	invite, _ := f.store.CreateInvite(ctx, owner)
+	pending, _ := f.store.JoinGroup(ctx, invite.Code, "p", "PC")
+	if err := f.store.TransferOwnership(ctx, owner, pending.Member.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("transfer to a pending member error = %v", err)
+	}
+	if err := f.store.TransferOwnership(ctx, owner, heir.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.store.CreateInvite(ctx, owner); !errors.Is(err, ErrForbidden) {
+		t.Fatal("old owner can still invite")
+	}
+	if _, err := f.store.CreateInvite(ctx, heir); err != nil {
+		t.Fatalf("new owner cannot invite: %v", err)
+	}
+	groups, err := f.store.ListGroups(ctx)
+	if err != nil || len(groups) != 1 || groups[0].OwnerName != "b" || groups[0].MemberCount != 4 {
+		t.Fatalf("groups = %+v err %v", groups, err)
+	}
+	recovered, err := f.store.RecoverGroup(ctx, groups[0].ID, "rescuer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.store.CreateInvite(ctx, recovered.Member); err != nil {
+		t.Fatalf("recovered owner cannot invite: %v", err)
+	}
+	if _, err := f.store.RecoverGroup(ctx, "no-such-group", "x"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("recover unknown group error = %v", err)
+	}
+}
+
+func TestOldDatabaseIsMigratedAndNewerOneIsRefused(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old.db")
+	raw, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstRelease := `
+CREATE TABLE player_groups (id TEXT PRIMARY KEY, name TEXT NOT NULL, invite_code TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL);
+CREATE TABLE members (id TEXT PRIMARY KEY, group_id TEXT NOT NULL, display_name TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL);
+CREATE TABLE worlds (id TEXT PRIMARY KEY, group_id TEXT NOT NULL, name TEXT NOT NULL, game_name TEXT NOT NULL, default_save_path TEXT NOT NULL,
+	default_launch TEXT NOT NULL, default_process TEXT NOT NULL, head_revision_id TEXT NOT NULL DEFAULT '', join_info TEXT NOT NULL DEFAULT '',
+	lease_counter INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL);
+CREATE TABLE revisions (id TEXT PRIMARY KEY, world_id TEXT NOT NULL, parent_id TEXT NOT NULL DEFAULT '', branch TEXT NOT NULL, blob_id TEXT NOT NULL,
+	sha256 TEXT NOT NULL, size INTEGER NOT NULL, author_id TEXT NOT NULL, created_at INTEGER NOT NULL, note TEXT NOT NULL DEFAULT '');
+CREATE TABLE leases (world_id TEXT PRIMARY KEY, holder_id TEXT NOT NULL, fencing_token INTEGER NOT NULL, base_revision_id TEXT NOT NULL DEFAULT '',
+	acquired_at INTEGER NOT NULL, expires_at INTEGER NOT NULL);
+INSERT INTO player_groups VALUES ('g1', 'old crew', 'ABCDEFGH', 1);
+INSERT INTO members VALUES ('m1', 'g1', 'founder', 'hash1', 1);
+INSERT INTO members VALUES ('m2', 'g1', 'friend', 'hash2', 2);
+INSERT INTO worlds (id, group_id, name, game_name, default_save_path, default_launch, default_process, created_at) VALUES ('w1', 'g1', 'base', 'valheim', '', '', '', 1);
+PRAGMA user_version = 1;`
+	if _, err := raw.Exec(firstRelease); err != nil {
+		t.Fatal(err)
+	}
+	raw.Close()
+	migrated, err := Open(path)
+	if err != nil {
+		t.Fatalf("opening a first-release database: %v", err)
+	}
+	defer migrated.Close()
+	founder := proto.Member{ID: "m1", GroupID: "g1", DisplayName: "founder", Status: proto.MemberApproved}
+	me, err := migrated.Me(context.Background(), founder)
+	if err != nil || me.Group.OwnerID != "m1" || len(me.Members) != 2 {
+		t.Fatalf("after migration: %+v err %v", me, err)
+	}
+	if _, err := migrated.CreateInvite(context.Background(), founder); err != nil {
+		t.Fatalf("first member did not become the owner: %v", err)
+	}
+	lease, err := migrated.AcquireLease(context.Background(), founder, "w1", "s")
+	if err != nil {
+		t.Fatalf("lease on a migrated world: %v", err)
+	}
+	if _, _, err := migrated.Commit(context.Background(), founder, CommitInput{WorldID: "w1", FencingToken: lease.FencingToken, BlobID: NewID(), Sha256: "00", Size: 1}); err != nil {
+		t.Fatalf("commit on a migrated world: %v", err)
+	}
+	migrated.Close()
+
+	raw, _ = sql.Open("sqlite", "file:"+path)
+	raw.Exec("PRAGMA user_version = 99")
+	raw.Close()
+	if _, err := Open(path); !errors.Is(err, ErrNewerDatabase) {
+		t.Fatalf("newer database error = %v", err)
 	}
 }

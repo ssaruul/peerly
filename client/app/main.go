@@ -20,16 +20,24 @@ import (
 func main() {
 	configDir, err := core.DefaultConfigDir()
 	if err != nil {
-		log.Fatal(err)
+		fatal("peerly cannot find the settings folder: " + err.Error())
 	}
-	config, err := core.LoadConfig(configDir)
-	if err != nil {
-		log.Fatal(err)
+	if err := os.MkdirAll(configDir, 0o750); err != nil {
+		fatal("peerly cannot create its settings folder " + configDir + ": " + err.Error())
 	}
 	if logFile, err := os.OpenFile(filepath.Join(configDir, "peerly.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600); err == nil {
 		defer logFile.Close()
 		log.SetOutput(logFile)
 	}
+	config, err := core.LoadConfig(configDir)
+	if err != nil {
+		fatal("peerly cannot read its settings in " + configDir + ": " + err.Error())
+	}
+	unlock, err := core.LockDir(configDir)
+	if err != nil {
+		fatal(err.Error())
+	}
+	defer unlock()
 	if err := config.CleanTemp(); err != nil {
 		log.Printf("could not clean temporary files: %v", err)
 	}
@@ -67,6 +75,6 @@ func main() {
 		},
 	})
 	if err != nil {
-		log.Fatal(err)
+		fatal("peerly could not open its window. On Windows 10 the WebView2 runtime from Microsoft is needed, or use peerly-browser.exe instead: " + err.Error())
 	}
 }

@@ -29,6 +29,8 @@ type Server struct {
 	Blobs     *blobs.Dir
 	AdminKey  string
 	MaxUpload int64
+
+	joinLimiter *rateLimiter
 }
 
 type memberHandler func(w http.ResponseWriter, r *http.Request, member proto.Member)
@@ -38,9 +40,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"service": "peerly"})
 	})
-	mux.HandleFunc("POST /groups", s.createGroup)
-	mux.HandleFunc("POST /groups/join", s.joinGroup)
+	if s.joinLimiter == nil {
+		s.joinLimiter = newRateLimiter(20, 20)
+	}
+	mux.HandleFunc("POST /groups", s.joinLimiter.wrap(s.createGroup))
+	mux.HandleFunc("POST /groups/join", s.joinLimiter.wrap(s.joinGroup))
 	mux.HandleFunc("POST /groups/invites", s.auth(s.createInvite))
+	mux.HandleFunc("POST /groups/owner", s.auth(s.transferOwnership))
+	mux.HandleFunc("GET /admin/groups", s.admin(s.listGroups))
+	mux.HandleFunc("POST /admin/groups/{id}/recover", s.admin(s.recoverGroup))
 	mux.HandleFunc("GET /me", s.authAny(s.me))
 	mux.HandleFunc("POST /members/{id}/approve", s.auth(s.approveMember))
 	mux.HandleFunc("DELETE /members/{id}", s.auth(s.revokeMember))
@@ -81,6 +89,8 @@ func writeError(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusForbidden, proto.ErrorResponse{Error: err.Error(), Pending: true})
 	case errors.Is(err, store.ErrBadInvite):
 		writeJSON(w, http.StatusNotFound, proto.ErrorResponse{Error: err.Error()})
+	case errors.Is(err, store.ErrNewerDatabase):
+		writeJSON(w, http.StatusServiceUnavailable, proto.ErrorResponse{Error: err.Error()})
 	case errors.Is(err, store.ErrNameTaken):
 		writeJSON(w, http.StatusConflict, proto.ErrorResponse{Error: err.Error()})
 	case errors.Is(err, store.ErrNotFork), errors.Is(err, store.ErrIsHead), errors.Is(err, store.ErrSelf), errors.Is(err, blobs.ErrChecksumMismatch):
@@ -165,8 +175,65 @@ func (s *Server) authAny(next memberHandler) http.HandlerFunc {
 	}
 }
 
+func (s *Server) hasAdminKey(r *http.Request) bool {
+	return subtle.ConstantTimeCompare([]byte(strings.TrimSpace(r.Header.Get("X-Admin-Key"))), []byte(s.AdminKey)) == 1
+}
+
+func (s *Server) admin(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if s.AdminKey == "" || !s.hasAdminKey(r) {
+			writeJSON(w, http.StatusForbidden, proto.ErrorResponse{Error: "this needs the server admin key"})
+			return
+		}
+		next(w, r)
+	}
+}
+
+func (s *Server) listGroups(w http.ResponseWriter, r *http.Request) {
+	groups, err := s.Store.ListGroups(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, groups)
+}
+
+func (s *Server) recoverGroup(w http.ResponseWriter, r *http.Request) {
+	request := proto.RecoverRequest{}
+	if !readJSON(w, r, &request) {
+		return
+	}
+	request.DisplayName = strings.TrimSpace(request.DisplayName)
+	if request.DisplayName == "" || tooLong(w, maxNameLength, map[string]string{"your name": request.DisplayName}) {
+		if request.DisplayName == "" {
+			badRequest(w, "your name is required")
+		}
+		return
+	}
+	session, err := s.Store.RecoverGroup(r.Context(), r.PathValue("id"), request.DisplayName)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	log.Printf("group %q recovered with the admin key, new owner %q", session.Group.Name, session.Member.DisplayName)
+	writeJSON(w, http.StatusCreated, session)
+}
+
+func (s *Server) transferOwnership(w http.ResponseWriter, r *http.Request, member proto.Member) {
+	request := proto.TransferRequest{}
+	if !readJSON(w, r, &request) {
+		return
+	}
+	if err := s.Store.TransferOwnership(r.Context(), member, request.MemberID); err != nil {
+		writeError(w, err)
+		return
+	}
+	log.Printf("%q made member %s the owner of group %s", member.DisplayName, request.MemberID, member.GroupID)
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Server) createGroup(w http.ResponseWriter, r *http.Request) {
-	if s.AdminKey != "" && subtle.ConstantTimeCompare([]byte(strings.TrimSpace(r.Header.Get("X-Admin-Key"))), []byte(s.AdminKey)) != 1 {
+	if s.AdminKey != "" && !s.hasAdminKey(r) {
 		writeJSON(w, http.StatusForbidden, proto.ErrorResponse{Error: "creating groups on this server requires the admin key"})
 		return
 	}
@@ -304,7 +371,11 @@ func (s *Server) deleteWorld(w http.ResponseWriter, r *http.Request, member prot
 }
 
 func (s *Server) acquireLease(w http.ResponseWriter, r *http.Request, member proto.Member) {
-	lease, err := s.Store.AcquireLease(r.Context(), member, r.PathValue("id"))
+	request := proto.AcquireRequest{}
+	if r.ContentLength != 0 && !readJSON(w, r, &request) {
+		return
+	}
+	lease, err := s.Store.AcquireLease(r.Context(), member, r.PathValue("id"), truncate(request.SessionID, maxNameLength))
 	if err != nil {
 		writeError(w, err)
 		return

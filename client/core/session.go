@@ -2,6 +2,8 @@ package core
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -102,6 +104,13 @@ type Session struct {
 
 	mutex       sync.Mutex
 	cancelPhase context.CancelFunc
+	sessionID   string
+}
+
+func newSessionID() string {
+	buffer := make([]byte, 8)
+	rand.Read(buffer)
+	return hex.EncodeToString(buffer)
 }
 
 func (s *Session) emit(kind EventKind, format string, args ...any) {
@@ -205,7 +214,10 @@ func (s *Session) Host(ctx context.Context) error {
 		s.previousSize = status.Head.Size
 	}
 
-	lease, err := s.Client.AcquireLease(ctx, s.WorldID)
+	if s.sessionID == "" {
+		s.sessionID = newSessionID()
+	}
+	lease, err := s.Client.AcquireLease(ctx, s.WorldID, s.sessionID)
 	if err != nil {
 		return err
 	}

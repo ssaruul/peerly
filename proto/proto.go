@@ -106,6 +106,26 @@ type LeaseRequest struct {
 	FencingToken int64 `json:"fencing_token"`
 }
 
+type AcquireRequest struct {
+	SessionID string `json:"session_id"`
+}
+
+type TransferRequest struct {
+	MemberID string `json:"member_id"`
+}
+
+type AdminGroup struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	OwnerName   string `json:"owner_name"`
+	MemberCount int    `json:"member_count"`
+	WorldCount  int    `json:"world_count"`
+}
+
+type RecoverRequest struct {
+	DisplayName string `json:"display_name"`
+}
+
 type PromoteRequest struct {
 	RevisionID string `json:"revision_id"`
 }

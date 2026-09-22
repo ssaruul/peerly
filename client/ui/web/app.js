@@ -391,6 +391,13 @@ function memberRow(member) {
       isPending ? ` asked to join ${formatTime(member.joined_at)}` : "")),
     state.is_owner && member.id !== state.member.id ? h("div", { class: "row" },
       isPending ? h("button", { class: "primary", onclick: () => act("member", () => api("POST", `/members/${member.id}/approve`), member.display_name + " can now use the group") }, "Approve") : null,
+      isPending ? null : h("button", { onclick: async () => {
+        const sure = await ask(`Make ${member.display_name} the owner?`, [
+          "They will be the only one who can invite friends, approve PCs and remove members. You stay a member.",
+          "Do this before you leave the group or lose this PC, otherwise nobody can manage the group.",
+        ], "Make owner");
+        if (sure) act("member", () => api("POST", `/members/${member.id}/owner`), member.display_name + " is now the owner");
+      } }, "Make owner"),
       h("button", { class: "danger", onclick: async () => {
         const sure = await ask(isPending ? `Turn away ${member.display_name}?` : `Remove ${member.display_name}?`, isPending
           ? ["Their PC never gets access. They need a new invite code to try again."]
@@ -477,10 +484,12 @@ function mainParts() {
     signature: state.server_url,
     build: () => h("p", { class: "small muted" }, `Server ${state.server_url}. `,
       h("button", { class: "link", onclick: async () => {
-        const sure = await ask("Leave the group on this PC?", [
+        const lines = [
           "This PC forgets the group. The group's saves stay on the server and your local game files are not touched.",
           "To come back you need an invite code again.",
-        ], "Leave", true);
+        ];
+        if (state.is_owner) lines.unshift(h("p", { class: "banner" }, "You are the group owner. If you leave without making someone else the owner first (Group and invites, Make owner), nobody can invite friends or approve PCs any more. Only the person running the server can then recover the group."));
+        const sure = await ask("Leave the group on this PC?", lines, "Leave", true);
         if (sure) act("leave", () => api("POST", "/leave"));
       } }, "Leave group on this PC")),
   });

@@ -29,7 +29,10 @@ const usage = `peerly-cli <command> [flags]
   delete-world   -world NAME
   invite                          (owner) print a one-use invite code for one friend
   approve        -member ID       (owner) approve a PC that joined with an invite
+  make-owner     -member ID       (owner) hand the group to another member
   remove-member  -member ID
+  admin-groups   -server URL -admin-key KEY               list groups on the server
+  admin-recover  -server URL -admin-key KEY -group ID -as NAME   become the owner of a group whose owner is gone
 `
 
 func main() {
@@ -79,6 +82,7 @@ func run(command string, args []string) error {
 	flags := flag.NewFlagSet(command, flag.ExitOnError)
 	serverURL := flags.String("server", "", "server url")
 	name := flags.String("name", "", "group or world name")
+	flags.StringVar(name, "group", "", "group id for admin-recover")
 	displayName := flags.String("as", "", "your display name")
 	adminKey := flags.String("admin-key", "", "server admin key")
 	inviteCode := flags.String("code", "", "invite code")
@@ -115,6 +119,29 @@ func run(command string, args []string) error {
 	}
 
 	switch command {
+	case "admin-groups", "admin-recover":
+		normalizedURL, err := core.NormalizeServerURL(*serverURL)
+		if err != nil {
+			return err
+		}
+		admin := core.NewAPIClient(normalizedURL, "")
+		admin.AdminKey = *adminKey
+		if command == "admin-groups" {
+			groups, err := admin.AdminGroups(ctx)
+			if err != nil {
+				return err
+			}
+			for _, group := range groups {
+				fmt.Printf("  %s  %-24s owner %-16s %d members, %d worlds\n", group.ID, group.Name, group.OwnerName, group.MemberCount, group.WorldCount)
+			}
+			return nil
+		}
+		session, err := admin.RecoverGroup(ctx, *name, *displayName)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("this PC is now the owner of %s as %s\n", session.Group.Name, session.Member.DisplayName)
+		return saveSession(normalizedURL, session)
 	case "create-group", "join":
 		normalizedURL, err := core.NormalizeServerURL(*serverURL)
 		if err != nil {
@@ -197,6 +224,8 @@ func run(command string, args []string) error {
 		return nil
 	case "approve":
 		return client.ApproveMember(ctx, *memberID)
+	case "make-owner":
+		return client.TransferOwnership(ctx, *memberID)
 	case "remove-member":
 		return client.RemoveMember(ctx, *memberID)
 	}

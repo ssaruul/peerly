@@ -110,6 +110,7 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("POST /api/leave", a.leave)
 	mux.HandleFunc("POST /api/invite", a.createInvite)
 	mux.HandleFunc("POST /api/members/{id}/approve", a.approveMember)
+	mux.HandleFunc("POST /api/members/{id}/owner", a.transferOwnership)
 	mux.HandleFunc("DELETE /api/members/{id}", a.removeMember)
 	mux.HandleFunc("POST /api/worlds", a.createWorld)
 	mux.HandleFunc("DELETE /api/worlds/{id}", a.deleteWorld)
@@ -385,6 +386,17 @@ func (a *App) createInvite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, invite)
+}
+
+func (a *App) transferOwnership(w http.ResponseWriter, r *http.Request) {
+	if err := a.client().TransferOwnership(r.Context(), r.PathValue("id")); err != nil {
+		fail(w, err)
+		return
+	}
+	a.mutex.Lock()
+	a.cachedGroup = proto.Group{}
+	a.mutex.Unlock()
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 func (a *App) approveMember(w http.ResponseWriter, r *http.Request) {

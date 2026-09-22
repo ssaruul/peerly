@@ -18,6 +18,8 @@ import (
 
 const defaultCheckpointMinutes = 10
 
+var ErrAlreadyRunning = errors.New("peerly is already running on this PC, maybe as another window or as peerly-browser. Close it first")
+
 type WorldSettings struct {
 	SavePath          string `json:"save_path"`
 	Launch            string `json:"launch"`

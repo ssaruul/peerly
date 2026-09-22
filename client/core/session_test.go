@@ -283,7 +283,7 @@ func TestLeaseSurvivesAnUploadLongerThanTheLeaseTTL(t *testing.T) {
 	hosting := make(chan error, 1)
 	go func() { hosting <- playerA.session(g.world.ID).Host(context.Background()) }()
 	time.Sleep(1500 * time.Millisecond)
-	if _, err := playerB.client.AcquireLease(context.Background(), g.world.ID); err == nil {
+	if _, err := playerB.client.AcquireLease(context.Background(), g.world.ID, "other"); err == nil {
 		t.Fatal("b took the lease while a's upload was still running")
 	}
 	if err := <-hosting; err != nil {
@@ -304,6 +304,14 @@ func TestRestartedHostKeepsProgressAndStaysOnMain(t *testing.T) {
 
 	frozen := playerA.session(g.world.ID)
 	frozen.Timings.Settle = time.Hour
+	var unplugged atomic.Bool
+	frozen.Client = NewAPIClient(g.server.url, playerA.client.Token)
+	frozen.Client.HTTP = &http.Client{Transport: roundTripper(func(request *http.Request) (*http.Response, error) {
+		if unplugged.Load() {
+			return nil, errors.New("this window crashed")
+		}
+		return http.DefaultTransport.RoundTrip(request)
+	})}
 	go frozen.Host(ctx)
 	deadline := time.Now().Add(5 * time.Second)
 	for !playerA.sawEvent(EventUploaded, CheckpointNote) || !playerA.sawEvent(EventGameExited, "") {
@@ -312,7 +320,14 @@ func TestRestartedHostKeepsProgressAndStaysOnMain(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+	unplugged.Store(true)
 	playerA.write(t, "world.sav", "start;checkpointed;played-after-checkpoint;")
+
+	tooSoon := playerA.session(g.world.ID)
+	if err := tooSoon.Host(ctx); err == nil || !strings.Contains(err.Error(), "another peerly window") {
+		t.Fatalf("a second window right after the crash should be told to wait: %v", err)
+	}
+	g.server.store.Now = func() time.Time { return time.Now().Add(store.ActiveWindow + time.Second) }
 
 	playerA.configure(t, g.world.ID, "true")
 	restarted := playerA.session(g.world.ID)

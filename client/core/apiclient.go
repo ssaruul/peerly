@@ -100,7 +100,7 @@ var sharedHTTP = &http.Client{Transport: &http.Transport{
 	Proxy:                 http.ProxyFromEnvironment,
 	DialContext:           (&net.Dialer{Timeout: 15 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
 	TLSHandshakeTimeout:   15 * time.Second,
-	ResponseHeaderTimeout: 60 * time.Second,
+	ResponseHeaderTimeout: 5 * time.Minute,
 	IdleConnTimeout:       90 * time.Second,
 	MaxIdleConnsPerHost:   4,
 	ForceAttemptHTTP2:     true,
@@ -223,9 +223,23 @@ func (c *APIClient) CreateWorld(ctx context.Context, request proto.CreateWorldRe
 	return world, c.call(ctx, http.MethodPost, "/worlds", request, &world)
 }
 
-func (c *APIClient) AcquireLease(ctx context.Context, worldID string) (proto.Lease, error) {
+func (c *APIClient) AcquireLease(ctx context.Context, worldID string, sessionID string) (proto.Lease, error) {
 	lease := proto.Lease{}
-	return lease, c.call(ctx, http.MethodPost, "/worlds/"+worldID+"/lease", nil, &lease)
+	return lease, c.call(ctx, http.MethodPost, "/worlds/"+worldID+"/lease", proto.AcquireRequest{SessionID: sessionID}, &lease)
+}
+
+func (c *APIClient) TransferOwnership(ctx context.Context, memberID string) error {
+	return c.call(ctx, http.MethodPost, "/groups/owner", proto.TransferRequest{MemberID: memberID}, nil)
+}
+
+func (c *APIClient) AdminGroups(ctx context.Context) ([]proto.AdminGroup, error) {
+	groups := []proto.AdminGroup{}
+	return groups, c.call(ctx, http.MethodGet, "/admin/groups", nil, &groups)
+}
+
+func (c *APIClient) RecoverGroup(ctx context.Context, groupID string, displayName string) (proto.SessionResponse, error) {
+	session := proto.SessionResponse{}
+	return session, c.call(ctx, http.MethodPost, "/admin/groups/"+groupID+"/recover", proto.RecoverRequest{DisplayName: displayName}, &session)
 }
 
 func (c *APIClient) Heartbeat(ctx context.Context, worldID string, fencingToken int64) error {

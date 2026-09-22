@@ -31,15 +31,24 @@ var (
 	ErrBadInvite = errors.New("this invite code is unknown, already used or older than a day. Ask the group owner for a new one")
 )
 
-const InviteLifetime = 24 * time.Hour
+const (
+	InviteLifetime = 24 * time.Hour
+	ActiveWindow   = 75 * time.Second
+)
 
 type LeaseHeldError struct {
-	Lease proto.Lease
+	Lease      proto.Lease
+	SameMember bool
 }
 
 func (e *LeaseHeldError) Error() string {
+	if e.SameMember {
+		return "you are already hosting this world from another peerly window or PC. If peerly crashed a moment ago, wait a minute and try again"
+	}
 	return "world is currently hosted by " + e.Lease.HolderName
 }
+
+var ErrNewerDatabase = errors.New("the database was written by a newer peerly server, upgrade this server binary")
 
 type Store struct {
 	db              *sql.DB
@@ -52,7 +61,7 @@ type Store struct {
 
 const CheckpointNote = "checkpoint"
 
-const schemaVersion = 1
+const schemaVersion = 2
 
 const schema = `
 CREATE TABLE IF NOT EXISTS player_groups (
@@ -115,10 +124,104 @@ CREATE TABLE IF NOT EXISTS leases (
 	holder_id TEXT NOT NULL REFERENCES members(id),
 	fencing_token INTEGER NOT NULL,
 	base_revision_id TEXT NOT NULL DEFAULT '',
+	session_id TEXT NOT NULL DEFAULT '',
 	acquired_at INTEGER NOT NULL,
+	renewed_at INTEGER NOT NULL DEFAULT 0,
 	expires_at INTEGER NOT NULL
 );
 `
+
+type column struct {
+	table, name, definition string
+}
+
+var migrations = map[int]func(ctx context.Context, tx *sql.Tx) error{
+	1: func(ctx context.Context, tx *sql.Tx) error {
+		for _, added := range []column{
+			{"player_groups", "owner_id", "TEXT NOT NULL DEFAULT ''"},
+			{"members", "device_name", "TEXT NOT NULL DEFAULT ''"},
+			{"members", "status", "TEXT NOT NULL DEFAULT 'approved'"},
+			{"members", "revoked_at", "INTEGER NOT NULL DEFAULT 0"},
+			{"worlds", "default_include", "TEXT NOT NULL DEFAULT ''"},
+			{"worlds", "created_by", "TEXT NOT NULL DEFAULT ''"},
+			{"revisions", "fencing_token", "INTEGER NOT NULL DEFAULT 0"},
+			{"leases", "session_id", "TEXT NOT NULL DEFAULT ''"},
+			{"leases", "renewed_at", "INTEGER NOT NULL DEFAULT 0"},
+		} {
+			if err := addColumn(ctx, tx, added); err != nil {
+				return err
+			}
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE player_groups SET owner_id = (SELECT id FROM members m WHERE m.group_id = player_groups.id ORDER BY created_at LIMIT 1) WHERE owner_id = ''`); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, schema)
+		return err
+	},
+}
+
+func addColumn(ctx context.Context, tx *sql.Tx, added column) error {
+	rows, err := tx.QueryContext(ctx, `PRAGMA table_info(`+added.table+`)`)
+	if err != nil {
+		return err
+	}
+	exists := false
+	for rows.Next() {
+		var id int
+		var name, kind string
+		var notNull, primaryKey int
+		var defaultValue sql.NullString
+		if err := rows.Scan(&id, &name, &kind, &notNull, &defaultValue, &primaryKey); err != nil {
+			rows.Close()
+			return err
+		}
+		if name == added.name {
+			exists = true
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if exists {
+		return nil
+	}
+	_, err = tx.ExecContext(ctx, fmt.Sprintf(`ALTER TABLE %s ADD COLUMN %s %s`, added.table, added.name, added.definition))
+	return err
+}
+
+func migrate(ctx context.Context, db *sql.DB) error {
+	var version int
+	if err := db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
+		return err
+	}
+	if version > schemaVersion {
+		return fmt.Errorf("%w (database version %d, server version %d)", ErrNewerDatabase, version, schemaVersion)
+	}
+	if version == schemaVersion {
+		return nil
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if version == 0 {
+		if _, err := tx.ExecContext(ctx, schema); err != nil {
+			return err
+		}
+	} else {
+		for step := version; step < schemaVersion; step++ {
+			if err := migrations[step](ctx, tx); err != nil {
+				return fmt.Errorf("migrating the database from version %d: %w", step, err)
+			}
+		}
+	}
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", schemaVersion)); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
 
 func Open(path string) (*Store, error) {
 	dsn := "file:" + path + "?_pragma=busy_timeout(10000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_txlock=immediate"
@@ -126,11 +229,7 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := db.Exec(schema); err != nil {
-		db.Close()
-		return nil, err
-	}
-	if _, err := db.Exec(fmt.Sprintf("PRAGMA user_version = %d", schemaVersion)); err != nil {
+	if err := migrate(context.Background(), db); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -265,6 +364,78 @@ func scanMember(row interface{ Scan(...any) error }) (proto.Member, error) {
 
 func (s *Store) MemberByToken(ctx context.Context, token string) (proto.Member, error) {
 	return scanMember(s.db.QueryRowContext(ctx, `SELECT `+memberColumns+` FROM members WHERE token_hash = ? AND revoked_at = 0`, hashToken(token)))
+}
+
+func (s *Store) TransferOwnership(ctx context.Context, owner proto.Member, memberID string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	group, err := getGroup(ctx, tx, owner.GroupID)
+	if err != nil {
+		return err
+	}
+	if group.OwnerID != owner.ID {
+		return ErrForbidden
+	}
+	target, err := scanMember(tx.QueryRowContext(ctx, `SELECT `+memberColumns+` FROM members WHERE id = ? AND group_id = ? AND revoked_at = 0`, memberID, owner.GroupID))
+	if err != nil {
+		return err
+	}
+	if target.Status != proto.MemberApproved {
+		return ErrNotFound
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE player_groups SET owner_id = ? WHERE id = ?`, target.ID, owner.GroupID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) ListGroups(ctx context.Context) ([]proto.AdminGroup, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT g.id, g.name, COALESCE((SELECT display_name FROM members WHERE id = g.owner_id), ''),
+		(SELECT COUNT(*) FROM members WHERE group_id = g.id AND revoked_at = 0),
+		(SELECT COUNT(*) FROM worlds WHERE group_id = g.id)
+		FROM player_groups g ORDER BY g.created_at`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	groups := []proto.AdminGroup{}
+	for rows.Next() {
+		group := proto.AdminGroup{}
+		if err := rows.Scan(&group.ID, &group.Name, &group.OwnerName, &group.MemberCount, &group.WorldCount); err != nil {
+			return nil, err
+		}
+		groups = append(groups, group)
+	}
+	return groups, rows.Err()
+}
+
+func (s *Store) RecoverGroup(ctx context.Context, groupID string, displayName string) (proto.SessionResponse, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return proto.SessionResponse{}, err
+	}
+	defer tx.Rollback()
+	group, err := getGroup(ctx, tx, groupID)
+	if err != nil {
+		return proto.SessionResponse{}, err
+	}
+	member, token, err := s.insertMember(ctx, tx, group.ID, displayName, "recovery", proto.MemberApproved)
+	if err != nil {
+		return proto.SessionResponse{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE player_groups SET owner_id = ? WHERE id = ?`, member.ID, group.ID); err != nil {
+		return proto.SessionResponse{}, err
+	}
+	group.OwnerID = member.ID
+	return proto.SessionResponse{Group: group, Member: member, Token: token}, tx.Commit()
+}
+
+func (s *Store) BackupTo(ctx context.Context, path string) error {
+	_, err := s.db.ExecContext(ctx, `VACUUM INTO ?`, path)
+	return err
 }
 
 func (s *Store) ApproveMember(ctx context.Context, owner proto.Member, memberID string) error {
@@ -487,6 +658,11 @@ func getLease(ctx context.Context, q queryer, worldID string) (proto.Lease, bool
 	return lease, err == nil, err
 }
 
+func getLeaseSession(ctx context.Context, q queryer, worldID string) (sessionID string, renewedAt int64, err error) {
+	err = q.QueryRowContext(ctx, `SELECT session_id, renewed_at FROM leases WHERE world_id = ?`, worldID).Scan(&sessionID, &renewedAt)
+	return sessionID, renewedAt, err
+}
+
 func (s *Store) ListWorlds(ctx context.Context, member proto.Member) ([]proto.WorldStatus, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT `+worldColumns+` FROM worlds WHERE group_id = ? ORDER BY created_at`, member.GroupID)
 	if err != nil {
@@ -533,7 +709,7 @@ func (s *Store) ListWorlds(ctx context.Context, member proto.Member) ([]proto.Wo
 	return statuses, nil
 }
 
-func (s *Store) AcquireLease(ctx context.Context, member proto.Member, worldID string) (proto.Lease, error) {
+func (s *Store) AcquireLease(ctx context.Context, member proto.Member, worldID string, sessionID string) (proto.Lease, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return proto.Lease{}, err
@@ -554,13 +730,23 @@ func (s *Store) AcquireLease(ctx context.Context, member proto.Member, worldID s
 			existing.FencingToken = 0
 			return proto.Lease{}, &LeaseHeldError{Lease: existing}
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE leases SET expires_at = ?, base_revision_id = ? WHERE world_id = ?`,
-			expiresAt, world.HeadRevisionID, worldID); err != nil {
+		heldBySession, renewedAt, err := getLeaseSession(ctx, tx, worldID)
+		if err != nil {
 			return proto.Lease{}, err
 		}
-		existing.ExpiresAt = expiresAt
-		existing.BaseRevisionID = world.HeadRevisionID
-		return existing, tx.Commit()
+		if heldBySession == sessionID {
+			if _, err := tx.ExecContext(ctx, `UPDATE leases SET expires_at = ?, renewed_at = ?, base_revision_id = ? WHERE world_id = ?`,
+				expiresAt, now, world.HeadRevisionID, worldID); err != nil {
+				return proto.Lease{}, err
+			}
+			existing.ExpiresAt = expiresAt
+			existing.BaseRevisionID = world.HeadRevisionID
+			return existing, tx.Commit()
+		}
+		if now-renewedAt < ActiveWindow.Milliseconds() {
+			existing.FencingToken = 0
+			return proto.Lease{}, &LeaseHeldError{Lease: existing, SameMember: true}
+		}
 	}
 	var fencingToken int64
 	if err := tx.QueryRowContext(ctx, `UPDATE worlds SET lease_counter = lease_counter + 1, join_info = '' WHERE id = ? RETURNING lease_counter`,
@@ -576,18 +762,19 @@ func (s *Store) AcquireLease(ctx context.Context, member proto.Member, worldID s
 		AcquiredAt:     now,
 		ExpiresAt:      expiresAt,
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT OR REPLACE INTO leases (world_id, holder_id, fencing_token, base_revision_id, acquired_at, expires_at)
-		VALUES (?, ?, ?, ?, ?, ?)`,
-		lease.WorldID, lease.HolderID, lease.FencingToken, lease.BaseRevisionID, lease.AcquiredAt, lease.ExpiresAt); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT OR REPLACE INTO leases (world_id, holder_id, fencing_token, base_revision_id, session_id, acquired_at, renewed_at, expires_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		lease.WorldID, lease.HolderID, lease.FencingToken, lease.BaseRevisionID, sessionID, lease.AcquiredAt, now, lease.ExpiresAt); err != nil {
 		return proto.Lease{}, err
 	}
 	return lease, tx.Commit()
 }
 
 func (s *Store) Heartbeat(ctx context.Context, member proto.Member, worldID string, fencingToken int64) (proto.Lease, error) {
-	expiresAt := s.nowMillis() + s.LeaseTTL.Milliseconds()
-	result, err := s.db.ExecContext(ctx, `UPDATE leases SET expires_at = ? WHERE world_id = ? AND holder_id = ? AND fencing_token = ?`,
-		expiresAt, worldID, member.ID, fencingToken)
+	now := s.nowMillis()
+	expiresAt := now + s.LeaseTTL.Milliseconds()
+	result, err := s.db.ExecContext(ctx, `UPDATE leases SET expires_at = ?, renewed_at = ? WHERE world_id = ? AND holder_id = ? AND fencing_token = ?`,
+		expiresAt, now, worldID, member.ID, fencingToken)
 	if err != nil {
 		return proto.Lease{}, err
 	}
