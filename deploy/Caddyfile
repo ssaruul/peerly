@@ -1,3 +1,7 @@
+# Replace saves.example.com with your domain. Caddy fetches the certificate itself.
+# Do not add trusted_proxies here unless you also change how the server reads
+# X-Forwarded-For: it rate limits joins by the last entry, which Caddy sets to
+# the real client address in this configuration.
 saves.example.com {
 	encode zstd gzip
 	request_body {

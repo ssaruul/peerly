@@ -117,17 +117,37 @@ function settingsPayload(form) {
   return { ...values, checkpoint_minutes: Number(values.checkpoint_minutes) || 0 };
 }
 
+let liveDialog = null;
+let wasPending = null;
+
 function closeDialog() {
+  liveDialog = null;
   if (dialog.open) dialog.close();
 }
 
-dialog.addEventListener("close", placeToast);
+dialog.addEventListener("close", () => { liveDialog = null; placeToast(); });
 
-function showDialog(...content) {
+function setDialogContent(content) {
   document.body.append(toast);
   dialog.replaceChildren(...content.flat(Infinity).filter((child) => child != null && child !== false));
-  if (!dialog.open) dialog.showModal();
   placeToast();
+}
+
+function showDialog(...content) {
+  liveDialog = null;
+  setDialogContent(content);
+  if (!dialog.open) dialog.showModal();
+}
+
+function showLiveDialog(build) {
+  showDialog(build());
+  liveDialog = build;
+}
+
+function refreshDialog() {
+  if (wasPending !== null && wasPending !== state.pending) closeDialog();
+  wasPending = state.pending;
+  if (dialog.open && liveDialog) setDialogContent([liveDialog()]);
 }
 
 function ask(title, lines, okLabel, danger, alternativeLabel) {
@@ -408,9 +428,13 @@ function memberRow(member) {
 }
 
 function openGroup() {
+  showLiveDialog(groupDialog);
+}
+
+function groupDialog() {
   const waiting = state.members.filter((member) => member.status === "pending");
   const approved = state.members.filter((member) => member.status !== "pending");
-  showDialog(
+  return [
     h("div", { class: "row spread" }, h("h2", {}, state.group.name), h("button", { onclick: closeDialog }, "Close")),
     state.is_owner
       ? h("div", { class: "stack tight" },
@@ -421,7 +445,7 @@ function openGroup() {
     waiting.length ? h("div", { class: "history" }, waiting.map(memberRow)) : null,
     h("h3", {}, "Members"),
     h("div", { class: "history" }, approved.map(memberRow)),
-  );
+  ];
 }
 
 function renderPending() {
@@ -522,6 +546,7 @@ function reconcile(parent, parts) {
 
 function render() {
   if (!state) return;
+  refreshDialog();
   const focused = document.activeElement;
   const focusedDraft = focused && root.contains(focused) ? focused.dataset.draft || "" : "";
   const selection = focusedDraft && typeof focused.selectionStart === "number" ? [focused.selectionStart, focused.selectionEnd] : null;

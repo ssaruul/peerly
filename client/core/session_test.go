@@ -257,8 +257,8 @@ func TestHostHandoffBetweenTwoPlayers(t *testing.T) {
 	if !playerA.sawEvent(EventWarning, "fork/a/") {
 		t.Fatal("a's offline progress was not reported as a separate branch")
 	}
-	if backups, _ := filepath.Glob(filepath.Join(playerA.config.BackupDir(g.world.ID), "*")); len(backups) != 0 {
-		t.Fatalf("a's progress is already on the server as a branch, a local backup copy is wasted disk: %v", backups)
+	if backups, _ := filepath.Glob(filepath.Join(playerA.config.BackupDir(g.world.ID), "*", "world.sav")); len(backups) != 1 || readFileContent(t, backups[0]) != "day1;a-played;a-offline;" {
+		t.Fatalf("a's offline progress must also be kept locally, a branch on the server can be deleted: %v", backups)
 	}
 	if forks := g.forkCount(t); forks != 2 {
 		t.Fatalf("fork revisions = %d", forks)
@@ -617,4 +617,13 @@ func TestUploadsWorkThroughAnHTTPSRedirect(t *testing.T) {
 	if err := playerA.session(g.world.ID).Host(context.Background()); err != nil {
 		t.Fatalf("hosting through a redirecting address: %v", err)
 	}
+}
+
+func readFileContent(t *testing.T, path string) string {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
 }

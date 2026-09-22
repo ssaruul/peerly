@@ -54,7 +54,7 @@ From then on: press **Host** to play, close the game when done, wait until the w
 
 **What if my internet drops for a while during a session?** peerly keeps trying to ping and to upload in the background and tells you so. A drop shorter than about 3 minutes changes nothing. A longer one frees the world; if no friend took it in the meantime, your session simply continues on the current world, and if someone did, your progress becomes a separate branch.
 
-**Can peerly delete my save?** It replaces the world files only after copying them to its backup folder (shown in Settings), and only the files that match the world's filter. Files it does not recognise are never touched.
+**Can peerly delete my save?** It replaces the world files only after copying them to its backup folder (shown in Settings), every time, and only the files that match the world's filter. The five most recent backups are kept. Files it does not recognise are never touched.
 
 **What can go wrong that peerly cannot fix?** Steam Cloud may put an old save back after peerly replaced it, so turn Steam Cloud off for the game (in Valheim, move the world to local storage). A few games write the host's identity inside the save (Palworld is the known case); those need more than a file copy and are not supported.
 
@@ -80,6 +80,8 @@ sudo -u peerly /usr/local/bin/peerly-server -data /var/lib/peerly -backup /var/b
 ```
 
 Copy the dated folder somewhere safe. Restoring is copying it back to `/var/lib/peerly` and restarting the service.
+
+The server keeps, per world, the 20 most recent session saves, 3 mid-session backups, and every branch save younger than 30 days (plus the 30 newest older ones). Older ones are removed automatically.
 
 **Upgrading**: replace the binary and restart the service. The database is upgraded automatically. A database written by a newer server is refused rather than damaged.
 

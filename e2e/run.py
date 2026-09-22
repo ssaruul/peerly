@@ -199,6 +199,8 @@ try:
         check("owner sees who asked to join and from which PC", "PC " in row.inner_text(), row.inner_text())
         page.screenshot(path=str(S / "shots/11-approve.png"))
         row.get_by_role("button", name="Approve").click()
+        expect(page.locator("dialog").get_by_role("heading", name="Waiting for approval")).to_have_count(0, timeout=15000)
+        check("the open group dialog updates by itself after approving", page.locator("dialog .item", has_text="bob").get_by_role("button", name="Approve").count() == 0)
         expect(friend.get_by_role("heading", name="base", exact=True)).to_be_visible(timeout=20000)
         check("approved PC sees the group's worlds by itself", True)
         page.get_by_role("button", name="Close").click()

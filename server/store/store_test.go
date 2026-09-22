@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -14,10 +15,11 @@ import (
 )
 
 type fixture struct {
-	store   *Store
-	clock   time.Time
-	world   proto.World
-	members []proto.Member
+	store      *Store
+	clock      time.Time
+	world      proto.World
+	members    []proto.Member
+	shaCounter int
 }
 
 func newFixture(t *testing.T, memberCount int) *fixture {
@@ -64,8 +66,14 @@ func (f *fixture) commit(t *testing.T, member proto.Member, parentID string, fen
 
 func (f *fixture) commitTo(t *testing.T, worldID string, member proto.Member, parentID string, fencingToken int64) proto.Revision {
 	t.Helper()
+	f.shaCounter++
+	return f.commitSha(t, worldID, member, parentID, fencingToken, fmt.Sprintf("sha-%d", f.shaCounter))
+}
+
+func (f *fixture) commitSha(t *testing.T, worldID string, member proto.Member, parentID string, fencingToken int64, sha string) proto.Revision {
+	t.Helper()
 	revision, _, err := f.store.Commit(context.Background(), member, CommitInput{
-		WorldID: worldID, ParentID: parentID, FencingToken: fencingToken, BlobID: NewID(), Sha256: "00", Size: 1,
+		WorldID: worldID, ParentID: parentID, FencingToken: fencingToken, BlobID: NewID(), Sha256: sha, Size: 1,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -318,11 +326,12 @@ func TestSameHolderReacquireReturnsCurrentHead(t *testing.T) {
 func TestForkRetentionNeverTouchesMain(t *testing.T) {
 	f := newFixture(t, 2)
 	f.store.KeepForks = 2
+	f.store.ForkGrace = 0
 	ctx := context.Background()
 	lease, _ := f.store.AcquireLease(ctx, f.members[0], f.world.ID, "s")
 	mainRevision := f.commit(t, f.members[0], "", lease.FencingToken)
-	for range 5 {
-		f.commit(t, f.members[1], "", 0)
+	for index := range 5 {
+		f.commitSha(t, f.world.ID, f.members[1], "", 0, fmt.Sprintf("fork-%d", index))
 	}
 	revisions, _ := f.store.ListRevisions(ctx, f.members[0], f.world.ID)
 	forks := 0
@@ -478,7 +487,7 @@ func TestLostUploadResponseDoesNotForkTheSession(t *testing.T) {
 	lease, _ := f.store.AcquireLease(ctx, f.members[0], f.world.ID, "s")
 	first := f.commit(t, f.members[0], "", lease.FencingToken)
 	retried, orphaned, err := f.store.Commit(ctx, f.members[0], CommitInput{
-		WorldID: f.world.ID, ParentID: "", FencingToken: lease.FencingToken, BlobID: NewID(), Sha256: "00", Size: 1,
+		WorldID: f.world.ID, ParentID: "", FencingToken: lease.FencingToken, BlobID: NewID(), Sha256: first.Sha256, Size: 1,
 	})
 	if err != nil || retried.ID != first.ID || len(orphaned) != 1 {
 		t.Fatalf("identical retry: revision %s (want %s) orphaned %v err %v", retried.ID, first.ID, orphaned, err)
@@ -655,5 +664,54 @@ PRAGMA user_version = 1;`
 	raw.Close()
 	if _, err := Open(path); !errors.Is(err, ErrNewerDatabase) {
 		t.Fatalf("newer database error = %v", err)
+	}
+}
+
+func TestYoungForksAreNeverPruned(t *testing.T) {
+	f := newFixture(t, 2)
+	f.store.KeepForks = 1
+	ctx := context.Background()
+	for range 5 {
+		f.commit(t, f.members[1], "", 0)
+	}
+	revisions, _ := f.store.ListRevisions(ctx, f.members[0], f.world.ID)
+	if len(revisions) != 5 {
+		t.Fatalf("%d of 5 recent branch saves survived", len(revisions))
+	}
+	f.clock = f.clock.Add(f.store.ForkGrace + time.Hour)
+	f.commit(t, f.members[1], "", 0)
+	revisions, _ = f.store.ListRevisions(ctx, f.members[0], f.world.ID)
+	if len(revisions) != 2 {
+		t.Fatalf("after the grace period %d branch saves remain, want the newest old one plus the new one", len(revisions))
+	}
+}
+
+func TestRetriedBranchUploadIsNotDuplicated(t *testing.T) {
+	f := newFixture(t, 2)
+	ctx := context.Background()
+	first := f.commitSha(t, f.world.ID, f.members[1], "", 0, "same-content")
+	again, orphaned, err := f.store.Commit(ctx, f.members[1], CommitInput{WorldID: f.world.ID, ParentID: "", FencingToken: 0, BlobID: NewID(), Sha256: "same-content", Size: 1})
+	if err != nil || again.ID != first.ID || len(orphaned) != 1 {
+		t.Fatalf("retry produced %s (first %s), orphaned %v, err %v", again.ID, first.ID, orphaned, err)
+	}
+	other := f.commitSha(t, f.world.ID, f.members[0], "", 0, "same-content")
+	if other.ID == first.ID {
+		t.Fatal("another author's identical upload was merged into someone else's branch")
+	}
+}
+
+func TestRemovingAMemberVoidsTheirOpenInvites(t *testing.T) {
+	f := newFixture(t, 2)
+	ctx := context.Background()
+	owner, heir := f.members[0], f.members[1]
+	invite, _ := f.store.CreateInvite(ctx, owner)
+	if err := f.store.TransferOwnership(ctx, owner, heir.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.RevokeMember(ctx, heir, owner.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.store.JoinGroup(ctx, invite.Code, "late", "PC"); !errors.Is(err, ErrBadInvite) {
+		t.Fatalf("a removed member's invite still admits people: %v", err)
 	}
 }

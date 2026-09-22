@@ -57,6 +57,7 @@ type Store struct {
 	KeepMain        int
 	KeepCheckpoints int
 	KeepForks       int
+	ForkGrace       time.Duration
 }
 
 const CheckpointNote = "checkpoint"
@@ -233,7 +234,7 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
-	return &Store{db: db, Now: time.Now, LeaseTTL: 3 * time.Minute, KeepMain: 20, KeepCheckpoints: 3, KeepForks: 30}, nil
+	return &Store{db: db, Now: time.Now, LeaseTTL: 3 * time.Minute, KeepMain: 20, KeepCheckpoints: 3, KeepForks: 30, ForkGrace: 30 * 24 * time.Hour}, nil
 }
 
 func (s *Store) Close() error {
@@ -523,6 +524,9 @@ func (s *Store) RevokeMember(ctx context.Context, owner proto.Member, memberID s
 		return ErrNotFound
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM leases WHERE holder_id = ?`, memberID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE invites SET used_by = 'revoked', used_at = ? WHERE created_by = ? AND used_at = 0`, s.nowMillis(), memberID); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -895,8 +899,8 @@ func (s *Store) prune(ctx context.Context, tx *sql.Tx, worldID string, headID st
 		return nil, err
 	}
 	orphanedMain = append(orphanedMain, orphanedCheckpoints...)
-	orphanedForks, err := s.pruneRevisions(ctx, tx, `SELECT id, blob_id FROM revisions WHERE world_id = ? AND branch != ?
-		ORDER BY created_at DESC, rowid DESC LIMIT -1 OFFSET ?`, worldID, proto.MainBranch, s.KeepForks)
+	orphanedForks, err := s.pruneRevisions(ctx, tx, `SELECT id, blob_id FROM revisions WHERE world_id = ? AND branch != ? AND created_at <= ?
+		ORDER BY created_at DESC, rowid DESC LIMIT -1 OFFSET ?`, worldID, proto.MainBranch, s.nowMillis()-s.ForkGrace.Milliseconds(), s.KeepForks)
 	if err != nil {
 		return nil, err
 	}
@@ -916,6 +920,19 @@ func (s *Store) Commit(ctx context.Context, member proto.Member, input CommitInp
 	lease, found, err := getLease(ctx, tx, input.WorldID)
 	if err != nil {
 		return proto.Revision{}, nil, err
+	}
+	var duplicateID string
+	err = tx.QueryRowContext(ctx, `SELECT id FROM revisions WHERE world_id = ? AND author_id = ? AND parent_id = ? AND sha256 = ? ORDER BY created_at DESC LIMIT 1`,
+		input.WorldID, member.ID, input.ParentID, input.Sha256).Scan(&duplicateID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return proto.Revision{}, nil, err
+	}
+	if duplicateID != "" {
+		duplicate, err := getRevision(ctx, tx, duplicateID)
+		if err != nil {
+			return proto.Revision{}, nil, err
+		}
+		return duplicate, []string{input.BlobID}, tx.Commit()
 	}
 	holdsLease := found && lease.HolderID == member.ID && lease.FencingToken == input.FencingToken && input.FencingToken != 0
 	parentID := input.ParentID

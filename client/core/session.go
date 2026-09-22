@@ -104,6 +104,7 @@ type Session struct {
 
 	mutex       sync.Mutex
 	cancelPhase context.CancelFunc
+	stopped     bool
 	sessionID   string
 }
 
@@ -141,6 +142,7 @@ func (s *Session) Lease() proto.Lease {
 
 func (s *Session) Stop() {
 	s.mutex.Lock()
+	s.stopped = true
 	cancel := s.cancelPhase
 	s.mutex.Unlock()
 	if cancel != nil {
@@ -152,6 +154,10 @@ func (s *Session) enter(phase Phase, parent context.Context) (context.Context, c
 	phaseContext, cancel := context.WithCancel(parent)
 	s.mutex.Lock()
 	s.cancelPhase = cancel
+	if s.stopped && phase != PhaseSaving {
+		cancel()
+	}
+	s.stopped = false
 	s.mutex.Unlock()
 	if s.OnEvent != nil {
 		s.OnEvent(Event{Kind: EventPhase, Phase: phase})
@@ -360,7 +366,7 @@ func (s *Session) prepareLocal(ctx context.Context) error {
 		s.parentID = head
 	}
 	backup := BackupNever
-	if fileCount > 0 && (!contentOnServer || !synced) {
+	if fileCount > 0 {
 		backup = BackupAlways
 	}
 	return s.restore(ctx, head, backup)
@@ -433,11 +439,11 @@ func RestoreRevision(ctx context.Context, client *APIClient, config *ConfigFile,
 	}
 	backup := options.Backup == BackupAlways
 	if options.Backup == BackupAuto {
-		currentHash, fileCount, err := ManifestHash(folder, filter)
+		_, fileCount, err := ManifestHash(folder, filter)
 		if err != nil {
 			return RestoreResult{}, err
 		}
-		backup = fileCount > 0 && !(local.SyncedBefore() && currentHash == local.LastManifestHash)
+		backup = fileCount > 0
 	}
 	tempDir, err := config.TempDir()
 	if err != nil {
@@ -653,9 +659,14 @@ func (s *Session) watch(ctx context.Context, gameDone <-chan error) {
 		if fingerprint == s.uploadedFingerprint || time.Since(lastChange) < s.Timings.Quiet || time.Since(lastCheckpoint) < checkpointEvery {
 			continue
 		}
-		lastCheckpoint = time.Now()
-		if _, err := s.uploadCurrent(ctx, CheckpointNote, fingerprint, false); err != nil && ctx.Err() == nil {
+		revision, err := s.uploadCurrent(ctx, CheckpointNote, fingerprint, false)
+		if err != nil && ctx.Err() == nil {
 			s.emit(EventWarning, "mid-session backup failed, the next one is tried later: %v", err)
+		}
+		if revision != nil {
+			lastCheckpoint = time.Now()
+		} else {
+			lastChange = time.Now()
 		}
 	}
 }
