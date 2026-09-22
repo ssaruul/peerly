@@ -42,6 +42,7 @@ func main() {
 		log.Printf("could not clean temporary files: %v", err)
 	}
 	app := ui.New(config)
+	app.OnBlockReason = setShutdownReason
 	var window context.Context
 	err = wails.Run(&options.App{
 		Title:       "peerly",

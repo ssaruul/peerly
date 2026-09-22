@@ -6,6 +6,7 @@ import (
 	"embed"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"net/http"
 	"os"
@@ -71,7 +72,8 @@ type State struct {
 }
 
 type App struct {
-	AccessKey string
+	AccessKey     string
+	OnBlockReason func(reason string)
 
 	config  *core.ConfigFile
 	mutex   sync.Mutex
@@ -213,6 +215,34 @@ func decode(w http.ResponseWriter, r *http.Request, target any) bool {
 		return false
 	}
 	return true
+}
+
+func blockReason(hosting HostingState) string {
+	if !hosting.Active {
+		return ""
+	}
+	switch hosting.Phase {
+	case core.PhasePreparing:
+		return "peerly is getting the world " + hosting.WorldName + " ready. Wait until it is done."
+	case core.PhaseSaving:
+		progress := ""
+		if hosting.Progress != nil && hosting.Progress.Total > 0 {
+			progress = fmt.Sprintf(" (%d%%)", hosting.Progress.Done*100/hosting.Progress.Total)
+		}
+		return "peerly is uploading your world save" + progress + ". Your friends lose this session's progress if you shut down now."
+	default:
+		return "peerly is hosting " + hosting.WorldName + ". Close the game and wait until peerly says the world is free."
+	}
+}
+
+func (a *App) announceBlockReason() {
+	if a.OnBlockReason == nil {
+		return
+	}
+	a.mutex.Lock()
+	reason := blockReason(a.hosting)
+	a.mutex.Unlock()
+	a.OnBlockReason(reason)
 }
 
 func (a *App) hostingSnapshot() HostingState {
@@ -532,6 +562,7 @@ func (a *App) saveSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) record(event core.Event) {
+	defer a.announceBlockReason()
 	a.mutex.Lock()
 	defer a.mutex.Unlock()
 	switch event.Kind {
@@ -587,9 +618,11 @@ func (a *App) host(w http.ResponseWriter, r *http.Request) {
 	a.session = session
 	a.done = done
 	a.mutex.Unlock()
+	a.announceBlockReason()
 
 	go func() {
 		defer close(done)
+		defer a.announceBlockReason()
 		err := session.Host(context.Background())
 		a.mutex.Lock()
 		defer a.mutex.Unlock()

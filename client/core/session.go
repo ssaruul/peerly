@@ -246,7 +246,7 @@ func (s *Session) Host(ctx context.Context) error {
 		releaseContext, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		if err := s.Client.ReleaseLease(releaseContext, s.WorldID, lease.FencingToken); err != nil {
-			s.emit(EventWarning, "could not tell the server you are done, the world frees itself within five minutes: %v", err)
+			s.emit(EventWarning, "could not tell the server you are done, the world frees itself within a few minutes: %v", err)
 			return
 		}
 		s.emit(EventReleased, "done, anyone in the group can host now")

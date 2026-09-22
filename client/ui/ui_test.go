@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -212,4 +213,35 @@ func TestCopyingASaveBlocksHostingUntilItIsDone(t *testing.T) {
 		t.Fatalf("host after the copy finished = %d", status)
 	}
 	f.waitIdle(t)
+}
+
+func TestShutdownReasonFollowsTheSession(t *testing.T) {
+	f := newFixture(t)
+	var mutex sync.Mutex
+	reasons := []string{}
+	f.app.OnBlockReason = func(reason string) {
+		mutex.Lock()
+		defer mutex.Unlock()
+		reasons = append(reasons, reason)
+	}
+	settings := map[string]any{"save_path": f.savePath, "include": "world.*", "launch": "true"}
+	if status, answer := f.call(t, "PUT", "/api/worlds/"+f.worldID+"/settings", settings, nil); status != http.StatusOK {
+		t.Fatalf("settings = %d %v", status, answer)
+	}
+	f.call(t, "POST", "/api/worlds/"+f.worldID+"/host", nil, nil)
+	f.waitIdle(t)
+	mutex.Lock()
+	defer mutex.Unlock()
+	if len(reasons) < 2 || reasons[len(reasons)-1] != "" {
+		t.Fatalf("reasons = %q", reasons)
+	}
+	sawUpload := false
+	for _, reason := range reasons {
+		if strings.Contains(reason, "uploading") {
+			sawUpload = true
+		}
+	}
+	if !sawUpload {
+		t.Fatalf("no upload reason announced: %q", reasons)
+	}
 }
