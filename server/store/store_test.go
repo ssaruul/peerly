@@ -1041,3 +1041,42 @@ func TestIncrementalRetentionMatchesFullEvaluation(t *testing.T) {
 		f.store.Close()
 	}
 }
+
+func TestASilentHostIsReportedUntilSomeoneTakesOverOrTheyReturn(t *testing.T) {
+	f := newFixture(t, 2)
+	ctx := context.Background()
+	host, friend := f.members[0], f.members[1]
+	lease, _ := f.store.AcquireLease(ctx, host, f.world.ID, "h")
+	f.clock = f.clock.Add(time.Minute)
+	f.store.Heartbeat(ctx, host, f.world.ID, lease.FencingToken)
+	lastPing := f.clock
+	f.clock = f.clock.Add(f.store.LeaseTTL + time.Hour)
+	statuses, _ := f.store.ListWorlds(ctx, friend)
+	if statuses[0].Lease != nil || statuses[0].SilentHost == nil || statuses[0].SilentHost.HolderName != "a" || statuses[0].SilentHost.RenewedAt != lastPing.UnixMilli() || statuses[0].SilentHost.FencingToken != 0 {
+		t.Fatalf("expired lease not reported as a silent host: %+v", statuses[0])
+	}
+	f.store.Heartbeat(ctx, host, f.world.ID, lease.FencingToken)
+	statuses, _ = f.store.ListWorlds(ctx, friend)
+	if statuses[0].SilentHost != nil || statuses[0].Lease == nil {
+		t.Fatal("a returning host should turn the silent warning back into a live lease")
+	}
+	f.clock = f.clock.Add(f.store.LeaseTTL + time.Hour)
+	taken, err := f.store.AcquireLease(ctx, friend, f.world.ID, "f")
+	if err != nil {
+		t.Fatal(err)
+	}
+	statuses, _ = f.store.ListWorlds(ctx, host)
+	if statuses[0].SilentHost != nil || statuses[0].Lease == nil || statuses[0].Lease.HolderName != "b" {
+		t.Fatalf("after a takeover the old silent record must be gone: %+v", statuses[0])
+	}
+	if _, err := f.store.Heartbeat(ctx, host, f.world.ID, lease.FencingToken); !errors.Is(err, ErrLeaseLost) {
+		t.Fatalf("the silent host coming back after a takeover must learn the lease is lost: %v", err)
+	}
+	if err := f.store.ReleaseLease(ctx, friend, f.world.ID, taken.FencingToken); err != nil {
+		t.Fatal(err)
+	}
+	statuses, _ = f.store.ListWorlds(ctx, host)
+	if statuses[0].SilentHost != nil || statuses[0].Lease != nil {
+		t.Fatal("a released lease must not linger as a silent host")
+	}
+}

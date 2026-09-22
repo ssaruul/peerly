@@ -217,6 +217,8 @@ func run(command string, args []string) error {
 				if status.World.JoinInfo != "" {
 					state += " (join: " + status.World.JoinInfo + ")"
 				}
+			} else if status.SilentHost != nil {
+				state = fmt.Sprintf("free, but %s was hosting and went silent at %s", status.SilentHost.HolderName, formatTime(max(status.SilentHost.RenewedAt, status.SilentHost.AcquiredAt)))
 			}
 			latest := "no save yet"
 			if status.Head != nil {

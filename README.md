@@ -52,7 +52,7 @@ From then on: press **Host** to play, close the game when done, wait until the w
 
 **What if my PC crashes while hosting?** The world is freed after 3 minutes. The group continues from the last mid-session backup, which holds the game's last autosave before the crash (or the one before it, if the crash came within 15 minutes of the previous backup). Everything after the game's last autosave is lost, as it would be without peerly. When you are back, peerly uploads what is on your disk as a separate branch so nothing that was saved is lost.
 
-**What if my internet drops for a while during a session?** peerly keeps trying to ping and to upload in the background and tells you so. A drop shorter than about 3 minutes changes nothing. A longer one frees the world; if no friend took it in the meantime, your session simply continues on the current world, and if someone did, your progress becomes a separate branch.
+**What if my internet drops for a while during a session?** peerly keeps trying to ping and to upload in the background and tells you so. A drop shorter than about 3 minutes changes nothing. A longer one frees the world, but your friends are told that you were hosting and went silent, and asked to check with you before taking over. If nobody takes it, your session simply continues on the current world once you are back online; if someone does, your progress becomes a separate branch.
 
 **Can peerly delete my save?** It replaces the world files only after copying them to its backup folder (shown in Settings), every time, and only the files that match the world's filter. The five most recent backups are kept. Files it does not recognise are never touched.
 

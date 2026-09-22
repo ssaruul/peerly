@@ -675,9 +675,9 @@ func getRevision(ctx context.Context, q queryer, revisionID string) (proto.Revis
 
 func getLease(ctx context.Context, q queryer, worldID string) (proto.Lease, bool, error) {
 	lease := proto.Lease{}
-	err := q.QueryRowContext(ctx, `SELECT l.world_id, l.holder_id, m.display_name, l.fencing_token, l.base_revision_id, l.acquired_at, l.expires_at
+	err := q.QueryRowContext(ctx, `SELECT l.world_id, l.holder_id, m.display_name, l.fencing_token, l.base_revision_id, l.acquired_at, l.renewed_at, l.expires_at
 		FROM leases l JOIN members m ON m.id = l.holder_id WHERE l.world_id = ?`, worldID).
-		Scan(&lease.WorldID, &lease.HolderID, &lease.HolderName, &lease.FencingToken, &lease.BaseRevisionID, &lease.AcquiredAt, &lease.ExpiresAt)
+		Scan(&lease.WorldID, &lease.HolderID, &lease.HolderName, &lease.FencingToken, &lease.BaseRevisionID, &lease.AcquiredAt, &lease.RenewedAt, &lease.ExpiresAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return lease, false, nil
 	}
@@ -729,6 +729,9 @@ func (s *Store) ListWorlds(ctx context.Context, member proto.Member) ([]proto.Wo
 				lease.FencingToken = 0
 			}
 			status.Lease = &lease
+		} else if found {
+			lease.FencingToken = 0
+			status.SilentHost = &lease
 		}
 		statuses = append(statuses, status)
 	}

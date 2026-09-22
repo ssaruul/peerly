@@ -244,18 +244,25 @@ async function startHosting(view, syncOnly) {
   }
   const found = `${survey.matched_count} file${survey.matched_count === 1 ? "" : "s"} (${formatSize(survey.matched_bytes)})`;
   let proceed = true;
-  if (!check.group_has_save && survey.matched_count > 0) {
+  const { silent } = worldFacts(view);
+  if (silent) {
+    proceed = await ask(`Take over from ${silent.holder_name}?`, [
+      `${silent.holder_name} was hosting this world and stopped answering ${silentSince(silent)}. Their PC may have crashed, or they may still be playing without a connection.`,
+      "If they are still playing, everything they do from now on ends up as a separate branch and the group will have to choose between the two. If you can reach them, ask first.",
+    ], "Take over");
+  }
+  if (proceed && !check.group_has_save && survey.matched_count > 0) {
     proceed = await ask("Start the group's world from this PC?", [
       `The group has no save yet. Your world on this PC, ${found}, becomes the starting point for everyone.`,
       h("p", { class: "small muted" }, "Folder: ", h("code", {}, survey.folder)),
     ], "Upload and continue");
-  } else if (!check.group_has_save) {
+  } else if (proceed && !check.group_has_save) {
     proceed = await ask("No world files found yet", [
       `Nothing in the save folder matches the file filter "${check.include || "everything"}".`,
       "That is fine for a brand new world: create it in the game with exactly that name, and it is uploaded when you close the game. If the world already exists, fix the folder or the filter in Settings first.",
       h("p", { class: "small muted" }, "Folder: ", h("code", {}, survey.folder)),
     ], "Continue");
-  } else if (check.never_synced && survey.matched_count > 0) {
+  } else if (proceed && check.never_synced && survey.matched_count > 0) {
     proceed = await ask("Replace the world files on this PC?", [
       `This PC has ${found} for this world that did not come from the group. Nothing is lost: they are copied to a backup folder and also uploaded as a separate branch the group can pick from History. Then they are replaced with the group's latest save.`,
       "If your copy is the newest one, continue, then open History and make your branch current.",
@@ -295,18 +302,24 @@ function worldFacts(view) {
   const lease = view.status.lease;
   const hosting = state.hosting;
   const hostingThis = hosting.world_id === world.id;
+  const silentHost = view.status.silent_host;
   return { world, lease, head: view.status.head, hosting, hostingThis, mine: hostingThis && hosting.active,
-    heldByOther: lease && lease.holder_id !== state.member.id, starting: pending.has("host-" + world.id) };
+    heldByOther: lease && lease.holder_id !== state.member.id, starting: pending.has("host-" + world.id),
+    silent: !lease && silentHost && silentHost.holder_id !== state.member.id ? silentHost : null };
+}
+
+function silentSince(silent) {
+  return formatTime(silent.renewed_at || silent.acquired_at);
 }
 
 function worldMainSignature(view) {
   const { lease, hosting, mine, starting } = worldFacts(view);
-  return JSON.stringify([view.status.world, view.status.head, lease && [lease.holder_id, lease.holder_name], view.local, view.resolved, view.can_delete,
+  return JSON.stringify([view.status.world, view.status.head, lease && [lease.holder_id, lease.holder_name], view.status.silent_host, view.local, view.resolved, view.can_delete,
     mine && [hosting.sync_only, hosting.phase, hosting.game_running], hosting.active && hosting.world_name, starting, state.server_error !== "", state.member.id]);
 }
 
 function worldMain(view) {
-  const { world, lease, head, hosting, mine, heldByOther, starting } = worldFacts(view);
+  const { world, lease, head, hosting, mine, heldByOther, starting, silent } = worldFacts(view);
 
   let badge = h("span", { class: "badge free" }, "Free to host");
   if (mine && hosting.sync_only) badge = h("span", { class: "badge mine" }, "Syncing");
@@ -337,6 +350,7 @@ function worldMain(view) {
       : "No save uploaded yet. The first person to host uploads their local world."),
     heldByOther && world.join_info ? h("p", {}, "Join them in the game: ", h("code", {}, world.join_info)) : null,
     heldByOther && !world.join_info ? h("p", { class: "small muted" }, "Ask " + lease.holder_name + " for the join code, or wait for them to share it here.") : null,
+    silent ? h("p", { class: "banner small" }, `${silent.holder_name} was hosting and went silent ${silentSince(silent)}. If they are still playing without a connection, their progress becomes a separate branch when you take over. Ask them first if you can.`) : null,
     !view.local.confirmed ? h("p", { class: "banner small" }, "Not set up on this PC yet. Press Host or Settings to check the save folder and files.") : null,
     actions,
   );

@@ -68,13 +68,15 @@ type Lease struct {
 	FencingToken   int64  `json:"fencing_token,omitempty"`
 	BaseRevisionID string `json:"base_revision_id"`
 	AcquiredAt     int64  `json:"acquired_at"`
+	RenewedAt      int64  `json:"renewed_at"`
 	ExpiresAt      int64  `json:"expires_at"`
 }
 
 type WorldStatus struct {
-	World World     `json:"world"`
-	Head  *Revision `json:"head"`
-	Lease *Lease    `json:"lease"`
+	World      World     `json:"world"`
+	Head       *Revision `json:"head"`
+	Lease      *Lease    `json:"lease"`
+	SilentHost *Lease    `json:"silent_host,omitempty"`
 }
 
 type CreateGroupRequest struct {
