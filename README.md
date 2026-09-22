@@ -44,6 +44,7 @@ Oracle Cloud blocks ports 80 and 443 in two places, the VCN security list and th
 Data lives in `/var/lib/peerly` (one SQLite file plus one file per save). To back it up while the server runs:
 
 ```sh
+sudo install -d -o peerly -g peerly /var/backups/peerly
 sudo -u peerly /usr/local/bin/peerly-server -data /var/lib/peerly -backup /var/backups/peerly
 ```
 
