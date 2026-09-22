@@ -274,9 +274,9 @@ func TestOtherGroupCannotSeeWorld(t *testing.T) {
 	}
 }
 
-func TestRetentionKeepsNewestMainRevisionsAndForks(t *testing.T) {
+func TestOnePersonsSessionsReplaceEachOther(t *testing.T) {
 	f := newFixture(t, 2)
-	f.store.KeepMain = 3
+	f.store.KeepPeople = 3
 	ctx := context.Background()
 	lease, _ := f.store.AcquireLease(ctx, f.members[0], f.world.ID, "s")
 	fork := f.commit(t, f.members[1], "", 0)
@@ -294,17 +294,40 @@ func TestRetentionKeepsNewestMainRevisionsAndForks(t *testing.T) {
 		orphanedTotal += len(orphanedBlobs)
 	}
 	revisions, _ := f.store.ListRevisions(ctx, f.members[0], f.world.ID)
-	mainCount, forkKept := 0, false
+	mainCount, records, forkKept := 0, 0, false
 	for _, revision := range revisions {
-		if revision.Branch == proto.MainBranch {
+		if revision.Branch == proto.MainBranch && revision.PrunedAt == 0 {
 			mainCount++
+		}
+		if revision.PrunedAt != 0 {
+			records++
 		}
 		if revision.ID == fork.ID {
 			forkKept = true
 		}
 	}
-	if mainCount != 3 || !forkKept || orphanedTotal != 3 || f.head(t) != parentID {
-		t.Fatalf("main=%d forkKept=%v orphaned=%d", mainCount, forkKept, orphanedTotal)
+	if mainCount != 1 || records != 5 || !forkKept || orphanedTotal != 5 || f.head(t) != parentID {
+		t.Fatalf("one person's sessions must replace each other but stay as records: main=%d records=%d forkKept=%v orphaned=%d", mainCount, records, forkKept, orphanedTotal)
+	}
+	for _, revision := range revisions {
+		if revision.PrunedAt == 0 {
+			continue
+		}
+		if _, _, err := f.store.RevisionBlob(ctx, f.members[0], revision.ID); !errors.Is(err, ErrGone) {
+			t.Fatalf("downloading a record-only save: %v", err)
+		}
+		if _, _, err := f.store.Promote(ctx, f.members[0], f.world.ID, revision.ID); !errors.Is(err, ErrGone) && !errors.As(err, new(*LeaseHeldError)) {
+			t.Fatalf("promoting a record-only save: %v", err)
+		}
+		break
+	}
+	f.clock = f.clock.Add(f.store.KeepRecords + time.Hour)
+	f.commit(t, f.members[0], parentID, lease.FencingToken)
+	revisions, _ = f.store.ListRevisions(ctx, f.members[0], f.world.ID)
+	for _, revision := range revisions {
+		if revision.PrunedAt != 0 && revision.PrunedAt < f.clock.Add(-f.store.KeepRecords).UnixMilli() {
+			t.Fatal("old records are never trimmed")
+		}
 	}
 }
 
@@ -336,7 +359,7 @@ func TestForkRetentionNeverTouchesMain(t *testing.T) {
 	revisions, _ := f.store.ListRevisions(ctx, f.members[0], f.world.ID)
 	forks := 0
 	for _, revision := range revisions {
-		if revision.Branch != proto.MainBranch {
+		if revision.Branch != proto.MainBranch && revision.PrunedAt == 0 {
 			forks++
 		}
 	}
@@ -347,7 +370,7 @@ func TestForkRetentionNeverTouchesMain(t *testing.T) {
 
 func TestPruneKeepsHeadEvenWhenClockJumpsBack(t *testing.T) {
 	f := newFixture(t, 1)
-	f.store.KeepMain = 2
+	f.store.KeepPeople = 2
 	ctx := context.Background()
 	lease, _ := f.store.AcquireLease(ctx, f.members[0], f.world.ID, "s")
 	parentID := ""
@@ -681,8 +704,14 @@ func TestYoungForksAreNeverPruned(t *testing.T) {
 	f.clock = f.clock.Add(f.store.ForkGrace + time.Hour)
 	f.commit(t, f.members[1], "", 0)
 	revisions, _ = f.store.ListRevisions(ctx, f.members[0], f.world.ID)
-	if len(revisions) != 2 {
-		t.Fatalf("after the grace period %d branch saves remain, want the newest old one plus the new one", len(revisions))
+	withFiles := 0
+	for _, revision := range revisions {
+		if revision.PrunedAt == 0 {
+			withFiles++
+		}
+	}
+	if withFiles != 2 || len(revisions) != 6 {
+		t.Fatalf("after the grace period %d branch saves keep their file (want 2) and %d records remain (want 6)", withFiles, len(revisions))
 	}
 }
 
@@ -716,31 +745,49 @@ func TestRemovingAMemberVoidsTheirOpenInvites(t *testing.T) {
 	}
 }
 
-func TestTheLastSaveByAnotherMemberSurvivesAHostingSpree(t *testing.T) {
-	f := newFixture(t, 2)
-	f.store.KeepMain = 3
+func TestTheLatestSessionOfEachRecentPersonIsKept(t *testing.T) {
+	f := newFixture(t, 4)
+	f.store.KeepPeople = 2
 	ctx := context.Background()
-	a, d := f.members[0], f.members[1]
-	leaseA, _ := f.store.AcquireLease(ctx, a, f.world.ID, "a")
-	good := f.commit(t, a, "", leaseA.FencingToken)
-	f.store.ReleaseLease(ctx, a, f.world.ID, leaseA.FencingToken)
-	parentID := good.ID
+	a, b, c, d := f.members[0], f.members[1], f.members[2], f.members[3]
+	host := func(member proto.Member, parentID string) proto.Revision {
+		lease, err := f.store.AcquireLease(ctx, member, f.world.ID, member.DisplayName)
+		if err != nil {
+			t.Fatal(err)
+		}
+		revision := f.commit(t, member, parentID, lease.FencingToken)
+		f.store.ReleaseLease(ctx, member, f.world.ID, lease.FencingToken)
+		return revision
+	}
+	saveA := host(a, "")
+	saveB := host(b, saveA.ID)
+	saveC := host(c, saveB.ID)
+	parentID := saveC.ID
+	var lastD proto.Revision
 	for range 10 {
-		leaseD, _ := f.store.AcquireLease(ctx, d, f.world.ID, "d")
-		parentID = f.commit(t, d, parentID, leaseD.FencingToken).ID
-		f.store.ReleaseLease(ctx, d, f.world.ID, leaseD.FencingToken)
+		lastD = host(d, parentID)
+		parentID = lastD.ID
 	}
-	if _, _, err := f.store.RevisionBlob(ctx, a, good.ID); err != nil {
-		t.Fatalf("the last save before d's spree was pruned: %v", err)
+	keptFiles := func() (map[string]bool, int) {
+		revisions, _ := f.store.ListRevisions(ctx, a, f.world.ID)
+		kept := map[string]bool{}
+		for _, revision := range revisions {
+			if revision.PrunedAt == 0 {
+				kept[revision.ID] = true
+			}
+		}
+		return kept, len(revisions)
 	}
-	revisions, _ := f.store.ListRevisions(ctx, a, f.world.ID)
-	if len(revisions) != f.store.KeepMain+1 {
-		t.Fatalf("%d revisions kept, want %d", len(revisions), f.store.KeepMain+1)
+	kept, records := keptFiles()
+	if !kept[saveC.ID] || !kept[lastD.ID] || len(kept) != 2 {
+		t.Fatalf("with 2 people kept: c's last session and d's latest session must survive d's spree, got %d files (c=%v d=%v)", len(kept), kept[saveC.ID], kept[lastD.ID])
 	}
-	leaseA, _ = f.store.AcquireLease(ctx, a, f.world.ID, "a")
-	f.commit(t, a, parentID, leaseA.FencingToken)
-	f.store.ReleaseLease(ctx, a, f.world.ID, leaseA.FencingToken)
-	if _, _, err := f.store.RevisionBlob(ctx, a, good.ID); err == nil {
-		t.Fatal("once a hosts again the old protected save should be subject to normal retention")
+	if kept[saveA.ID] || kept[saveB.ID] || records != 13 {
+		t.Fatalf("older sessions must lose their file but stay as records: a=%v b=%v records=%d", kept[saveA.ID], kept[saveB.ID], records)
+	}
+	newC := host(c, parentID)
+	kept, _ = keptFiles()
+	if kept[saveC.ID] || !kept[newC.ID] || !kept[lastD.ID] {
+		t.Fatalf("c hosting again must replace c's old session and keep d's: %v", kept)
 	}
 }

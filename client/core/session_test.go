@@ -632,7 +632,7 @@ func readFileContent(t *testing.T, path string) string {
 func TestPrunedLastSyncIsReuploadedAsABranch(t *testing.T) {
 	g := newGroup(t, "a", "c", "d")
 	playerA, playerC, playerD := g.players[0], g.players[1], g.players[2]
-	g.server.store.KeepMain = 2
+	g.server.store.KeepPeople = 2
 	ctx := context.Background()
 	playerA.write(t, "world.sav", "old version world;")
 	playerA.configure(t, g.world.ID, "true")
@@ -651,7 +651,7 @@ func TestPrunedLastSyncIsReuploadedAsABranch(t *testing.T) {
 	}
 	revisions, _ := playerA.client.Revisions(ctx, g.world.ID)
 	for _, revision := range revisions {
-		if revision.ID == playerA.config.World(g.world.ID).LastRevisionID {
+		if revision.ID == playerA.config.World(g.world.ID).LastRevisionID && revision.PrunedAt == 0 {
 			t.Fatal("test setup: a's save was not pruned")
 		}
 	}

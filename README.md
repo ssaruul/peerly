@@ -81,7 +81,7 @@ sudo -u peerly /usr/local/bin/peerly-server -data /var/lib/peerly -backup /var/b
 
 Copy the dated folder somewhere safe. Restoring is copying it back to `/var/lib/peerly` and restarting the service.
 
-The server keeps, per world, the 5 most recent session saves, 3 mid-session backups, and every branch save younger than 30 days (plus the 30 newest older ones). Older ones are removed automatically. Five copies of a 300 MB world is 1.5 GB per world. Two extra rules protect the group from one member's mistakes: the newest save made by someone other than the current host is never removed, however many sessions the current host runs, and a PC whose last synced copy is no longer on the server uploads that copy as a branch before replacing it.
+The server keeps, per world, the latest session save of each of the 5 most recent hosts, 3 mid-session backups, and every branch save younger than 30 days (plus the 30 newest older ones). One person's sessions replace each other, so however often one friend hosts, the last save of everyone before them stays until they host again. Five people with a 300 MB world is 1.5 GB per world. History still lists every session for six months after its file was removed, so the group can always see who hosted when. A PC whose last synced copy is no longer on the server uploads that copy as a branch before replacing it.
 
 **Upgrading**: replace the binary and restart the service. The database is upgraded automatically. A database written by a newer server is refused rather than damaged.
 

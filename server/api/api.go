@@ -83,6 +83,8 @@ func writeError(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusNotFound, proto.ErrorResponse{Error: err.Error()})
 	case errors.Is(err, store.ErrLeaseLost):
 		writeJSON(w, http.StatusGone, proto.ErrorResponse{Error: err.Error()})
+	case errors.Is(err, store.ErrGone):
+		writeJSON(w, http.StatusNotFound, proto.ErrorResponse{Error: err.Error()})
 	case errors.Is(err, store.ErrForbidden), errors.Is(err, store.ErrNotYours), errors.Is(err, store.ErrNotAuthor):
 		writeJSON(w, http.StatusForbidden, proto.ErrorResponse{Error: err.Error()})
 	case errors.Is(err, store.ErrPending):

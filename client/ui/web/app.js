@@ -749,23 +749,25 @@ async function openHistory(view) {
   const items = revisions.map((revision) => {
     const isHead = revision.id === headID;
     const isFork = revision.branch !== "main";
-    return h("div", { class: "item" + (isHead ? " head" : "") },
+    const recordOnly = !!revision.pruned_at;
+    return h("div", { class: "item" + (isHead ? " head" : "") + (recordOnly ? " muted" : "") },
       h("div", { class: "row spread" },
         h("div", {},
           h("strong", {}, revision.note || "save"), " ",
           isHead ? h("span", { class: "badge free" }, "current") : null,
           isFork ? h("span", { class: "badge fork", title: revision.branch }, "separate branch") : null,
-          h("p", { class: "small muted" }, `${revision.author_name}, ${formatTime(revision.created_at)}, ${formatSize(revision.size)}`),
+          recordOnly ? h("span", { class: "badge", title: "Only the record of this session is kept, its file was removed to save space" }, "save no longer kept") : null,
+          h("p", { class: "small muted" }, `${revision.author_name}, ${formatTime(revision.created_at)}` + (recordOnly ? "" : `, ${formatSize(revision.size)}`)),
         ),
         h("div", { class: "row" },
-          isHead ? null : h("button", { onclick: async () => {
+          isHead || recordOnly ? null : h("button", { onclick: async () => {
             const sure = await ask("Make this save the current world?", [
               `Everyone in the group gets ${revision.author_name}'s save from ${formatTime(revision.created_at)} the next time they host.`,
               "The present current save stays in this history, so this can be reversed.",
             ], "Make current");
             if (sure) act("history", () => api("POST", `/worlds/${world.id}/promote`, { revision_id: revision.id }), "This save is now the current world");
           } }, "Make current"),
-          h("button", { onclick: async () => {
+          recordOnly ? null : h("button", { onclick: async () => {
             const sure = await ask("Put this save on this PC?", [
               "The world files on this PC are replaced with this save. If they hold progress the server does not have, they are copied to the backup folder first.",
               "This does not change anything for your friends.",
@@ -788,7 +790,7 @@ async function openHistory(view) {
   });
   showDialog(
     h("div", { class: "row spread" }, h("h2", {}, world.name + " history"), h("button", { onclick: closeDialog }, "Close")),
-    h("p", { class: "small muted" }, "A separate branch appears when someone played without holding the world, for example offline. Nothing is overwritten: the group decides whether to make it current."),
+    h("p", { class: "small muted" }, "A separate branch appears when someone played without holding the world, for example offline. Nothing is overwritten: the group decides whether to make it current. Every session stays listed for six months; only the latest save of each of the five most recent hosts keeps its file."),
     h("div", { class: "history" }, items.length ? items : h("p", { class: "muted" }, "No saves yet.")),
   );
 }

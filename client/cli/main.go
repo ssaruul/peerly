@@ -332,8 +332,12 @@ func run(command string, args []string) error {
 			if revision.ID == world.HeadRevisionID {
 				marker = "*"
 			}
-			fmt.Printf("%s %s  %-28s %-10s %8d KB  %s  %s\n", marker, revision.ID, revision.Branch, revision.AuthorName,
-				revision.Size/1024, formatTime(revision.CreatedAt), revision.Note)
+			size := fmt.Sprintf("%8d KB", revision.Size/1024)
+			if revision.PrunedAt != 0 {
+				size = " (record)"
+			}
+			fmt.Printf("%s %s  %-28s %-10s %s  %s  %s\n", marker, revision.ID, revision.Branch, revision.AuthorName,
+				size, formatTime(revision.CreatedAt), revision.Note)
 		}
 		return nil
 	case "pull":

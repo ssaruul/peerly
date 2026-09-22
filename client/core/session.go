@@ -353,7 +353,7 @@ func (s *Session) prepareLocal(ctx context.Context) error {
 			return err
 		}
 		for _, revision := range revisions {
-			if revision.ID == local.LastRevisionID {
+			if revision.ID == local.LastRevisionID && revision.PrunedAt == 0 {
 				lastStillOnServer = true
 			}
 		}

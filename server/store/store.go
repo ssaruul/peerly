@@ -29,6 +29,7 @@ var (
 	ErrNotAuthor = errors.New("only the person who made this branch save or the group owner can delete it")
 	ErrPending   = errors.New("this PC is waiting for the group owner to approve it")
 	ErrBadInvite = errors.New("this invite code is unknown, already used or older than a day. Ask the group owner for a new one")
+	ErrGone      = errors.New("this save is no longer kept on the server, only its record in History")
 )
 
 const (
@@ -54,15 +55,16 @@ type Store struct {
 	db              *sql.DB
 	Now             func() time.Time
 	LeaseTTL        time.Duration
-	KeepMain        int
+	KeepPeople      int
 	KeepCheckpoints int
 	KeepForks       int
 	ForkGrace       time.Duration
+	KeepRecords     time.Duration
 }
 
 const CheckpointNote = "checkpoint"
 
-const schemaVersion = 2
+const schemaVersion = 3
 
 const schema = `
 CREATE TABLE IF NOT EXISTS player_groups (
@@ -116,7 +118,8 @@ CREATE TABLE IF NOT EXISTS revisions (
 	author_id TEXT NOT NULL REFERENCES members(id),
 	created_at INTEGER NOT NULL,
 	note TEXT NOT NULL DEFAULT '',
-	fencing_token INTEGER NOT NULL DEFAULT 0
+	fencing_token INTEGER NOT NULL DEFAULT 0,
+	pruned_at INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS revisions_world ON revisions(world_id, created_at);
 CREATE INDEX IF NOT EXISTS revisions_blob ON revisions(blob_id);
@@ -158,6 +161,9 @@ var migrations = map[int]func(ctx context.Context, tx *sql.Tx) error{
 		}
 		_, err := tx.ExecContext(ctx, schema)
 		return err
+	},
+	2: func(ctx context.Context, tx *sql.Tx) error {
+		return addColumn(ctx, tx, column{"revisions", "pruned_at", "INTEGER NOT NULL DEFAULT 0"})
 	},
 }
 
@@ -234,7 +240,7 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
-	return &Store{db: db, Now: time.Now, LeaseTTL: 3 * time.Minute, KeepMain: 5, KeepCheckpoints: 3, KeepForks: 30, ForkGrace: 30 * 24 * time.Hour}, nil
+	return &Store{db: db, Now: time.Now, LeaseTTL: 3 * time.Minute, KeepPeople: 5, KeepCheckpoints: 3, KeepForks: 30, ForkGrace: 30 * 24 * time.Hour, KeepRecords: 180 * 24 * time.Hour}, nil
 }
 
 func (s *Store) Close() error {
@@ -591,7 +597,7 @@ func (s *Store) DeleteWorld(ctx context.Context, member proto.Member, worldID st
 		lease.FencingToken = 0
 		return nil, &LeaseHeldError{Lease: lease}
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT DISTINCT blob_id FROM revisions WHERE world_id = ?`, worldID)
+	rows, err := tx.QueryContext(ctx, `SELECT DISTINCT blob_id FROM revisions WHERE world_id = ? AND blob_id != ''`, worldID)
 	if err != nil {
 		return nil, err
 	}
@@ -640,12 +646,12 @@ func (s *Store) World(ctx context.Context, member proto.Member, worldID string) 
 	return getWorld(ctx, s.db, worldID, member.GroupID)
 }
 
-const revisionColumns = `r.id, r.world_id, r.parent_id, r.branch, r.sha256, r.size, r.author_id, m.display_name, r.created_at, r.note`
+const revisionColumns = `r.id, r.world_id, r.parent_id, r.branch, r.sha256, r.size, r.author_id, m.display_name, r.created_at, r.note, r.pruned_at`
 
 func scanRevision(row interface{ Scan(...any) error }) (proto.Revision, error) {
 	revision := proto.Revision{}
 	err := row.Scan(&revision.ID, &revision.WorldID, &revision.ParentID, &revision.Branch, &revision.Sha256,
-		&revision.Size, &revision.AuthorID, &revision.AuthorName, &revision.CreatedAt, &revision.Note)
+		&revision.Size, &revision.AuthorID, &revision.AuthorName, &revision.CreatedAt, &revision.Note, &revision.PrunedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return revision, ErrNotFound
 	}
@@ -852,7 +858,7 @@ func forkBranchName(displayName string, at time.Time) string {
 	return fmt.Sprintf("fork/%s/%s", cleaned, at.UTC().Format("20060102-150405"))
 }
 
-func (s *Store) pruneRevisions(ctx context.Context, tx *sql.Tx, query string, args ...any) ([]string, error) {
+func (s *Store) pruneRevisions(ctx context.Context, tx *sql.Tx, keepRecord bool, query string, args ...any) ([]string, error) {
 	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
@@ -873,7 +879,11 @@ func (s *Store) pruneRevisions(ctx context.Context, tx *sql.Tx, query string, ar
 	}
 	orphanedBlobs := []string{}
 	for _, entry := range expiredRevisions {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM revisions WHERE id = ?`, entry.revisionID); err != nil {
+		if keepRecord {
+			if _, err := tx.ExecContext(ctx, `UPDATE revisions SET blob_id = '', size = 0, pruned_at = ? WHERE id = ?`, s.nowMillis(), entry.revisionID); err != nil {
+				return nil, err
+			}
+		} else if _, err := tx.ExecContext(ctx, `DELETE FROM revisions WHERE id = ?`, entry.revisionID); err != nil {
 			return nil, err
 		}
 		var remaining int
@@ -888,32 +898,31 @@ func (s *Store) pruneRevisions(ctx context.Context, tx *sql.Tx, query string, ar
 }
 
 func (s *Store) prune(ctx context.Context, tx *sql.Tx, worldID string, headID string) ([]string, error) {
-	keepID := headID
-	var headAuthor string
-	if err := tx.QueryRowContext(ctx, `SELECT author_id FROM revisions WHERE id = ?`, headID).Scan(&headAuthor); err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return nil, err
-	}
-	if headAuthor != "" {
-		err := tx.QueryRowContext(ctx, `SELECT id FROM revisions WHERE world_id = ? AND branch = ? AND note != ? AND author_id != ?
-			ORDER BY created_at DESC, rowid DESC LIMIT 1`, worldID, proto.MainBranch, CheckpointNote, headAuthor).Scan(&keepID)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return nil, err
-		}
-	}
-	orphanedMain, err := s.pruneRevisions(ctx, tx, `SELECT id, blob_id FROM revisions WHERE world_id = ? AND branch = ? AND id != ? AND id != ? AND note != ?
-		ORDER BY created_at DESC, rowid DESC LIMIT -1 OFFSET ?`, worldID, proto.MainBranch, headID, keepID, CheckpointNote, max(s.KeepMain-1, 0))
+	orphanedMain, err := s.pruneRevisions(ctx, tx, true, `WITH sessions AS (
+			SELECT id, blob_id, author_id,
+				ROW_NUMBER() OVER (PARTITION BY author_id ORDER BY created_at DESC, rowid DESC) AS per_person
+			FROM revisions WHERE world_id = ? AND branch = ? AND note != ? AND blob_id != ''
+		), people AS (
+			SELECT author_id FROM revisions WHERE world_id = ? AND branch = ? AND note != ? AND blob_id != ''
+			GROUP BY author_id ORDER BY MAX(created_at) DESC LIMIT ?
+		)
+		SELECT id, blob_id FROM sessions WHERE id != ? AND (per_person > 1 OR author_id NOT IN (SELECT author_id FROM people))`,
+		worldID, proto.MainBranch, CheckpointNote, worldID, proto.MainBranch, CheckpointNote, s.KeepPeople, headID)
 	if err != nil {
 		return nil, err
 	}
-	orphanedCheckpoints, err := s.pruneRevisions(ctx, tx, `SELECT id, blob_id FROM revisions WHERE world_id = ? AND branch = ? AND id != ? AND note = ?
+	orphanedCheckpoints, err := s.pruneRevisions(ctx, tx, false, `SELECT id, blob_id FROM revisions WHERE world_id = ? AND branch = ? AND id != ? AND note = ? AND blob_id != ''
 		ORDER BY created_at DESC, rowid DESC LIMIT -1 OFFSET ?`, worldID, proto.MainBranch, headID, CheckpointNote, s.KeepCheckpoints)
 	if err != nil {
 		return nil, err
 	}
 	orphanedMain = append(orphanedMain, orphanedCheckpoints...)
-	orphanedForks, err := s.pruneRevisions(ctx, tx, `SELECT id, blob_id FROM revisions WHERE world_id = ? AND branch != ? AND created_at <= ?
+	orphanedForks, err := s.pruneRevisions(ctx, tx, true, `SELECT id, blob_id FROM revisions WHERE world_id = ? AND branch != ? AND created_at <= ? AND blob_id != ''
 		ORDER BY created_at DESC, rowid DESC LIMIT -1 OFFSET ?`, worldID, proto.MainBranch, s.nowMillis()-s.ForkGrace.Milliseconds(), s.KeepForks)
 	if err != nil {
+		return nil, err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM revisions WHERE world_id = ? AND blob_id = '' AND pruned_at < ?`, worldID, s.nowMillis()-s.KeepRecords.Milliseconds()); err != nil {
 		return nil, err
 	}
 	return append(orphanedMain, orphanedForks...), nil
@@ -934,7 +943,7 @@ func (s *Store) Commit(ctx context.Context, member proto.Member, input CommitInp
 		return proto.Revision{}, nil, err
 	}
 	var duplicateID string
-	err = tx.QueryRowContext(ctx, `SELECT id FROM revisions WHERE world_id = ? AND author_id = ? AND parent_id = ? AND sha256 = ? ORDER BY created_at DESC LIMIT 1`,
+	err = tx.QueryRowContext(ctx, `SELECT id FROM revisions WHERE world_id = ? AND author_id = ? AND parent_id = ? AND sha256 = ? AND blob_id != '' ORDER BY created_at DESC LIMIT 1`,
 		input.WorldID, member.ID, input.ParentID, input.Sha256).Scan(&duplicateID)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return proto.Revision{}, nil, err
@@ -1049,6 +1058,9 @@ func (s *Store) Promote(ctx context.Context, member proto.Member, worldID string
 	if err := tx.QueryRowContext(ctx, `SELECT blob_id FROM revisions WHERE id = ?`, revisionID).Scan(&blobID); err != nil {
 		return proto.Revision{}, nil, err
 	}
+	if blobID == "" {
+		return proto.Revision{}, nil, ErrGone
+	}
 	promoted := proto.Revision{
 		ID:         NewID(),
 		WorldID:    worldID,
@@ -1108,6 +1120,9 @@ func (s *Store) RevisionBlob(ctx context.Context, member proto.Member, revisionI
 	if errors.Is(err, sql.ErrNoRows) {
 		return revision, "", ErrNotFound
 	}
+	if err == nil && blobID == "" {
+		return revision, "", ErrGone
+	}
 	return revision, blobID, err
 }
 
@@ -1141,6 +1156,9 @@ func (s *Store) DiscardFork(ctx context.Context, member proto.Member, revisionID
 	if _, err := tx.ExecContext(ctx, `DELETE FROM revisions WHERE id = ?`, revisionID); err != nil {
 		return "", err
 	}
+	if blobID == "" {
+		return "", tx.Commit()
+	}
 	var remaining int
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM revisions WHERE blob_id = ?`, blobID).Scan(&remaining); err != nil {
 		return "", err
@@ -1152,7 +1170,7 @@ func (s *Store) DiscardFork(ctx context.Context, member proto.Member, revisionID
 }
 
 func (s *Store) ReferencedBlobs(ctx context.Context) (map[string]bool, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT blob_id FROM revisions`)
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT blob_id FROM revisions WHERE blob_id != ''`)
 	if err != nil {
 		return nil, err
 	}
