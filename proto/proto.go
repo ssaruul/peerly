@@ -2,17 +2,29 @@ package proto
 
 const MainBranch = "main"
 
+const (
+	MemberPending  = "pending"
+	MemberApproved = "approved"
+)
+
 type Group struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	InviteCode string `json:"invite_code"`
-	OwnerID    string `json:"owner_id"`
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	OwnerID string `json:"owner_id"`
 }
 
 type Member struct {
 	ID          string `json:"id"`
 	GroupID     string `json:"group_id"`
 	DisplayName string `json:"display_name"`
+	DeviceName  string `json:"device_name"`
+	Status      string `json:"status"`
+	JoinedAt    int64  `json:"joined_at"`
+}
+
+type Invite struct {
+	Code      string `json:"code"`
+	ExpiresAt int64  `json:"expires_at"`
 }
 
 type World struct {
@@ -66,6 +78,7 @@ type CreateGroupRequest struct {
 type JoinGroupRequest struct {
 	InviteCode  string `json:"invite_code"`
 	DisplayName string `json:"display_name"`
+	DeviceName  string `json:"device_name"`
 }
 
 type SessionResponse struct {
@@ -89,10 +102,6 @@ type CreateWorldRequest struct {
 	DefaultInclude  string `json:"default_include"`
 }
 
-type InviteResponse struct {
-	InviteCode string `json:"invite_code"`
-}
-
 type LeaseRequest struct {
 	FencingToken int64 `json:"fencing_token"`
 }
@@ -107,6 +116,7 @@ type JoinInfoRequest struct {
 }
 
 type ErrorResponse struct {
-	Error string `json:"error"`
-	Lease *Lease `json:"lease,omitempty"`
+	Error   string `json:"error"`
+	Lease   *Lease `json:"lease,omitempty"`
+	Pending bool   `json:"pending,omitempty"`
 }

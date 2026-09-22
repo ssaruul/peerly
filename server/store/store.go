@@ -27,7 +27,11 @@ var (
 	ErrNameTaken = errors.New("a world with this name already exists in the group")
 	ErrSelf      = errors.New("the owner cannot remove themselves")
 	ErrNotAuthor = errors.New("only the person who made this branch save or the group owner can delete it")
+	ErrPending   = errors.New("this PC is waiting for the group owner to approve it")
+	ErrBadInvite = errors.New("this invite code is unknown, already used or older than a day. Ask the group owner for a new one")
 )
+
+const InviteLifetime = 24 * time.Hour
 
 type LeaseHeldError struct {
 	Lease proto.Lease
@@ -54,7 +58,6 @@ const schema = `
 CREATE TABLE IF NOT EXISTS player_groups (
 	id TEXT PRIMARY KEY,
 	name TEXT NOT NULL,
-	invite_code TEXT NOT NULL UNIQUE,
 	owner_id TEXT NOT NULL DEFAULT '',
 	created_at INTEGER NOT NULL
 );
@@ -62,9 +65,20 @@ CREATE TABLE IF NOT EXISTS members (
 	id TEXT PRIMARY KEY,
 	group_id TEXT NOT NULL REFERENCES player_groups(id),
 	display_name TEXT NOT NULL,
+	device_name TEXT NOT NULL DEFAULT '',
+	status TEXT NOT NULL DEFAULT 'approved',
 	token_hash TEXT NOT NULL UNIQUE,
 	revoked_at INTEGER NOT NULL DEFAULT 0,
 	created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS invites (
+	code TEXT PRIMARY KEY,
+	group_id TEXT NOT NULL REFERENCES player_groups(id),
+	created_by TEXT NOT NULL REFERENCES members(id),
+	created_at INTEGER NOT NULL,
+	expires_at INTEGER NOT NULL,
+	used_by TEXT NOT NULL DEFAULT '',
+	used_at INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS worlds (
 	id TEXT PRIMARY KEY,
@@ -165,12 +179,12 @@ func (s *Store) CreateGroup(ctx context.Context, name string, displayName string
 		return proto.SessionResponse{}, err
 	}
 	defer tx.Rollback()
-	group := proto.Group{ID: NewID(), Name: name, InviteCode: newInviteCode()}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO player_groups (id, name, invite_code, created_at) VALUES (?, ?, ?, ?)`,
-		group.ID, group.Name, group.InviteCode, s.nowMillis()); err != nil {
+	group := proto.Group{ID: NewID(), Name: name}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO player_groups (id, name, created_at) VALUES (?, ?, ?)`,
+		group.ID, group.Name, s.nowMillis()); err != nil {
 		return proto.SessionResponse{}, err
 	}
-	member, token, err := s.insertMember(ctx, tx, group.ID, displayName)
+	member, token, err := s.insertMember(ctx, tx, group.ID, displayName, "", proto.MemberApproved)
 	if err != nil {
 		return proto.SessionResponse{}, err
 	}
@@ -181,44 +195,95 @@ func (s *Store) CreateGroup(ctx context.Context, name string, displayName string
 	return proto.SessionResponse{Group: group, Member: member, Token: token}, tx.Commit()
 }
 
-func (s *Store) JoinGroup(ctx context.Context, inviteCode string, displayName string) (proto.SessionResponse, error) {
+func (s *Store) CreateInvite(ctx context.Context, owner proto.Member) (proto.Invite, error) {
+	group, err := getGroup(ctx, s.db, owner.GroupID)
+	if err != nil {
+		return proto.Invite{}, err
+	}
+	if group.OwnerID != owner.ID {
+		return proto.Invite{}, ErrForbidden
+	}
+	invite := proto.Invite{Code: newInviteCode(), ExpiresAt: s.nowMillis() + InviteLifetime.Milliseconds()}
+	_, err = s.db.ExecContext(ctx, `INSERT INTO invites (code, group_id, created_by, created_at, expires_at) VALUES (?, ?, ?, ?, ?)`,
+		invite.Code, owner.GroupID, owner.ID, s.nowMillis(), invite.ExpiresAt)
+	return invite, err
+}
+
+func (s *Store) JoinGroup(ctx context.Context, inviteCode string, displayName string, deviceName string) (proto.SessionResponse, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return proto.SessionResponse{}, err
 	}
 	defer tx.Rollback()
-	group := proto.Group{}
-	err = tx.QueryRowContext(ctx, `SELECT id, name, invite_code, owner_id FROM player_groups WHERE invite_code = ?`,
-		NormalizeInviteCode(inviteCode)).Scan(&group.ID, &group.Name, &group.InviteCode, &group.OwnerID)
+	now := s.nowMillis()
+	var groupID string
+	err = tx.QueryRowContext(ctx, `SELECT group_id FROM invites WHERE code = ? AND used_at = 0 AND expires_at > ?`,
+		NormalizeInviteCode(inviteCode), now).Scan(&groupID)
 	if errors.Is(err, sql.ErrNoRows) {
-		return proto.SessionResponse{}, ErrNotFound
+		return proto.SessionResponse{}, ErrBadInvite
 	}
 	if err != nil {
 		return proto.SessionResponse{}, err
 	}
-	member, token, err := s.insertMember(ctx, tx, group.ID, displayName)
+	group, err := getGroup(ctx, tx, groupID)
 	if err != nil {
 		return proto.SessionResponse{}, err
+	}
+	member, token, err := s.insertMember(ctx, tx, group.ID, displayName, deviceName, proto.MemberPending)
+	if err != nil {
+		return proto.SessionResponse{}, err
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE invites SET used_by = ?, used_at = ? WHERE code = ? AND used_at = 0`,
+		member.ID, now, NormalizeInviteCode(inviteCode))
+	if err != nil {
+		return proto.SessionResponse{}, err
+	}
+	if affected, _ := result.RowsAffected(); affected == 0 {
+		return proto.SessionResponse{}, ErrBadInvite
 	}
 	return proto.SessionResponse{Group: group, Member: member, Token: token}, tx.Commit()
 }
 
-func (s *Store) insertMember(ctx context.Context, tx *sql.Tx, groupID string, displayName string) (proto.Member, string, error) {
-	member := proto.Member{ID: NewID(), GroupID: groupID, DisplayName: displayName}
+func (s *Store) insertMember(ctx context.Context, tx *sql.Tx, groupID string, displayName string, deviceName string, status string) (proto.Member, string, error) {
+	member := proto.Member{ID: NewID(), GroupID: groupID, DisplayName: displayName, DeviceName: deviceName, Status: status, JoinedAt: s.nowMillis()}
 	token := newSecret()
-	_, err := tx.ExecContext(ctx, `INSERT INTO members (id, group_id, display_name, token_hash, created_at) VALUES (?, ?, ?, ?, ?)`,
-		member.ID, member.GroupID, member.DisplayName, hashToken(token), s.nowMillis())
+	_, err := tx.ExecContext(ctx, `INSERT INTO members (id, group_id, display_name, device_name, status, token_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		member.ID, member.GroupID, member.DisplayName, member.DeviceName, member.Status, hashToken(token), member.JoinedAt)
 	return member, token, err
 }
 
-func (s *Store) MemberByToken(ctx context.Context, token string) (proto.Member, error) {
+const memberColumns = `id, group_id, display_name, device_name, status, created_at`
+
+func scanMember(row interface{ Scan(...any) error }) (proto.Member, error) {
 	member := proto.Member{}
-	err := s.db.QueryRowContext(ctx, `SELECT id, group_id, display_name FROM members WHERE token_hash = ? AND revoked_at = 0`,
-		hashToken(token)).Scan(&member.ID, &member.GroupID, &member.DisplayName)
+	err := row.Scan(&member.ID, &member.GroupID, &member.DisplayName, &member.DeviceName, &member.Status, &member.JoinedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return member, ErrNotFound
 	}
 	return member, err
+}
+
+func (s *Store) MemberByToken(ctx context.Context, token string) (proto.Member, error) {
+	return scanMember(s.db.QueryRowContext(ctx, `SELECT `+memberColumns+` FROM members WHERE token_hash = ? AND revoked_at = 0`, hashToken(token)))
+}
+
+func (s *Store) ApproveMember(ctx context.Context, owner proto.Member, memberID string) error {
+	group, err := getGroup(ctx, s.db, owner.GroupID)
+	if err != nil {
+		return err
+	}
+	if group.OwnerID != owner.ID {
+		return ErrForbidden
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE members SET status = ? WHERE id = ? AND group_id = ? AND status = ? AND revoked_at = 0`,
+		proto.MemberApproved, memberID, owner.GroupID, proto.MemberPending)
+	if err != nil {
+		return err
+	}
+	if affected, _ := result.RowsAffected(); affected == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 type queryer interface {
@@ -227,8 +292,8 @@ type queryer interface {
 
 func getGroup(ctx context.Context, q queryer, groupID string) (proto.Group, error) {
 	group := proto.Group{}
-	err := q.QueryRowContext(ctx, `SELECT id, name, invite_code, owner_id FROM player_groups WHERE id = ?`, groupID).
-		Scan(&group.ID, &group.Name, &group.InviteCode, &group.OwnerID)
+	err := q.QueryRowContext(ctx, `SELECT id, name, owner_id FROM player_groups WHERE id = ?`, groupID).
+		Scan(&group.ID, &group.Name, &group.OwnerID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return group, ErrNotFound
 	}
@@ -242,32 +307,19 @@ func (s *Store) Me(ctx context.Context, member proto.Member) (proto.MeResponse, 
 		return response, err
 	}
 	response.Group = group
-	rows, err := s.db.QueryContext(ctx, `SELECT id, group_id, display_name FROM members WHERE group_id = ? AND revoked_at = 0 ORDER BY created_at`, member.GroupID)
+	rows, err := s.db.QueryContext(ctx, `SELECT `+memberColumns+` FROM members WHERE group_id = ? AND revoked_at = 0 ORDER BY created_at`, member.GroupID)
 	if err != nil {
 		return response, err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		other := proto.Member{}
-		if err := rows.Scan(&other.ID, &other.GroupID, &other.DisplayName); err != nil {
+		other, err := scanMember(rows)
+		if err != nil {
 			return response, err
 		}
 		response.Members = append(response.Members, other)
 	}
 	return response, rows.Err()
-}
-
-func (s *Store) RotateInvite(ctx context.Context, member proto.Member) (string, error) {
-	inviteCode := newInviteCode()
-	result, err := s.db.ExecContext(ctx, `UPDATE player_groups SET invite_code = ? WHERE id = ? AND owner_id = ?`,
-		inviteCode, member.GroupID, member.ID)
-	if err != nil {
-		return "", err
-	}
-	if affected, _ := result.RowsAffected(); affected == 0 {
-		return "", ErrForbidden
-	}
-	return inviteCode, nil
 }
 
 func (s *Store) RevokeMember(ctx context.Context, owner proto.Member, memberID string) error {

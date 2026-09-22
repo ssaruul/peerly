@@ -40,8 +40,9 @@ func (s *Server) Handler() http.Handler {
 	})
 	mux.HandleFunc("POST /groups", s.createGroup)
 	mux.HandleFunc("POST /groups/join", s.joinGroup)
-	mux.HandleFunc("POST /groups/invite", s.auth(s.rotateInvite))
-	mux.HandleFunc("GET /me", s.auth(s.me))
+	mux.HandleFunc("POST /groups/invites", s.auth(s.createInvite))
+	mux.HandleFunc("GET /me", s.authAny(s.me))
+	mux.HandleFunc("POST /members/{id}/approve", s.auth(s.approveMember))
 	mux.HandleFunc("DELETE /members/{id}", s.auth(s.revokeMember))
 	mux.HandleFunc("GET /worlds", s.auth(s.listWorlds))
 	mux.HandleFunc("POST /worlds", s.auth(s.createWorld))
@@ -76,6 +77,10 @@ func writeError(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusGone, proto.ErrorResponse{Error: err.Error()})
 	case errors.Is(err, store.ErrForbidden), errors.Is(err, store.ErrNotYours), errors.Is(err, store.ErrNotAuthor):
 		writeJSON(w, http.StatusForbidden, proto.ErrorResponse{Error: err.Error()})
+	case errors.Is(err, store.ErrPending):
+		writeJSON(w, http.StatusForbidden, proto.ErrorResponse{Error: err.Error(), Pending: true})
+	case errors.Is(err, store.ErrBadInvite):
+		writeJSON(w, http.StatusNotFound, proto.ErrorResponse{Error: err.Error()})
 	case errors.Is(err, store.ErrNameTaken):
 		writeJSON(w, http.StatusConflict, proto.ErrorResponse{Error: err.Error()})
 	case errors.Is(err, store.ErrNotFork), errors.Is(err, store.ErrIsHead), errors.Is(err, store.ErrSelf), errors.Is(err, blobs.ErrChecksumMismatch):
@@ -131,6 +136,16 @@ func parseToken(w http.ResponseWriter, raw string) (int64, bool) {
 }
 
 func (s *Server) auth(next memberHandler) http.HandlerFunc {
+	return s.authAny(func(w http.ResponseWriter, r *http.Request, member proto.Member) {
+		if member.Status != proto.MemberApproved {
+			writeError(w, store.ErrPending)
+			return
+		}
+		next(w, r, member)
+	})
+}
+
+func (s *Server) authAny(next memberHandler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		token, found := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 		if !found || token == "" {
@@ -183,6 +198,7 @@ func (s *Server) joinGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	request.DisplayName = strings.TrimSpace(request.DisplayName)
+	request.DeviceName = truncate(strings.TrimSpace(request.DeviceName), maxNameLength)
 	if strings.TrimSpace(request.InviteCode) == "" || request.DisplayName == "" {
 		badRequest(w, "invite code and your name are required")
 		return
@@ -190,27 +206,32 @@ func (s *Server) joinGroup(w http.ResponseWriter, r *http.Request) {
 	if tooLong(w, maxNameLength, map[string]string{"your name": request.DisplayName, "invite code": request.InviteCode}) {
 		return
 	}
-	session, err := s.Store.JoinGroup(r.Context(), request.InviteCode, request.DisplayName)
-	if errors.Is(err, store.ErrNotFound) {
-		writeJSON(w, http.StatusNotFound, proto.ErrorResponse{Error: "no group has this invite code, check it with the person who invited you"})
-		return
-	}
+	session, err := s.Store.JoinGroup(r.Context(), request.InviteCode, request.DisplayName, request.DeviceName)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	log.Printf("%q joined group %q", session.Member.DisplayName, session.Group.Name)
+	log.Printf("%q (%s) asked to join group %q", session.Member.DisplayName, session.Member.DeviceName, session.Group.Name)
 	writeJSON(w, http.StatusCreated, session)
 }
 
-func (s *Server) rotateInvite(w http.ResponseWriter, r *http.Request, member proto.Member) {
-	inviteCode, err := s.Store.RotateInvite(r.Context(), member)
+func (s *Server) createInvite(w http.ResponseWriter, r *http.Request, member proto.Member) {
+	invite, err := s.Store.CreateInvite(r.Context(), member)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	log.Printf("%q rotated the invite code of group %s", member.DisplayName, member.GroupID)
-	writeJSON(w, http.StatusOK, proto.InviteResponse{InviteCode: inviteCode})
+	log.Printf("%q created an invite for group %s", member.DisplayName, member.GroupID)
+	writeJSON(w, http.StatusCreated, invite)
+}
+
+func (s *Server) approveMember(w http.ResponseWriter, r *http.Request, member proto.Member) {
+	if err := s.Store.ApproveMember(r.Context(), member, r.PathValue("id")); err != nil {
+		writeError(w, err)
+		return
+	}
+	log.Printf("%q approved member %s in group %s", member.DisplayName, r.PathValue("id"), member.GroupID)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) revokeMember(w http.ResponseWriter, r *http.Request, member proto.Member) {

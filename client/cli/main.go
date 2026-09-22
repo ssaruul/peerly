@@ -27,7 +27,8 @@ const usage = `peerly-cli <command> [flags]
   promote        -world NAME -revision ID
   discard        -revision ID
   delete-world   -world NAME
-  new-invite
+  invite                          (owner) print a one-use invite code for one friend
+  approve        -member ID       (owner) approve a PC that joined with an invite
   remove-member  -member ID
 `
 
@@ -100,7 +101,11 @@ func run(command string, args []string) error {
 	client := core.NewAPIClient(saved.ServerURL, saved.Token)
 
 	saveSession := func(normalizedURL string, session proto.SessionResponse) error {
-		fmt.Printf("joined %s as %s, invite code for friends: %s\n", session.Group.Name, session.Member.DisplayName, session.Group.InviteCode)
+		if session.Member.Status == proto.MemberPending {
+			fmt.Printf("asked to join %s as %s, waiting for the group owner to approve this PC\n", session.Group.Name, session.Member.DisplayName)
+		} else {
+			fmt.Printf("created %s as %s, run 'peerly-cli invite' to invite a friend\n", session.Group.Name, session.Member.DisplayName)
+		}
 		return config.Update(func(stored *core.Config) {
 			stored.ServerURL = normalizedURL
 			stored.Token = session.Token
@@ -126,7 +131,8 @@ func run(command string, args []string) error {
 		if command == "create-group" {
 			session, err = anonymous.CreateGroup(ctx, *name, *displayName)
 		} else {
-			session, err = anonymous.JoinGroup(ctx, *inviteCode, *displayName)
+			deviceName, _ := os.Hostname()
+			session, err = anonymous.JoinGroup(ctx, *inviteCode, *displayName, deviceName)
 		}
 		if err != nil {
 			return err
@@ -139,17 +145,21 @@ func run(command string, args []string) error {
 	}
 	switch command {
 	case "status":
-		statuses, err := client.Worlds(ctx)
-		if err != nil {
-			return err
-		}
 		me, err := client.Me(ctx)
 		if err != nil {
 			return err
 		}
-		fmt.Printf("group %s (invite %s), you are %s\n", me.Group.Name, me.Group.InviteCode, saved.Member.DisplayName)
+		if me.Member.Status == proto.MemberPending {
+			fmt.Printf("group %s: this PC is waiting for the owner to approve it\n", me.Group.Name)
+			return nil
+		}
+		statuses, err := client.Worlds(ctx)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("group %s, you are %s\n", me.Group.Name, saved.Member.DisplayName)
 		for _, member := range me.Members {
-			fmt.Printf("  member %s  %s\n", member.ID, member.DisplayName)
+			fmt.Printf("  member %s  %-16s %s %s\n", member.ID, member.DisplayName, member.Status, member.DeviceName)
 		}
 		for _, status := range statuses {
 			state := "free"
@@ -178,13 +188,15 @@ func run(command string, args []string) error {
 		return nil
 	case "discard":
 		return client.DiscardFork(ctx, *revisionID)
-	case "new-invite":
-		code, err := client.RotateInvite(ctx)
+	case "invite":
+		invite, err := client.CreateInvite(ctx)
 		if err != nil {
 			return err
 		}
-		fmt.Println("new invite code:", code)
+		fmt.Printf("invite code for one friend: %s (works once, expires %s)\n", invite.Code, formatTime(invite.ExpiresAt))
 		return nil
+	case "approve":
+		return client.ApproveMember(ctx, *memberID)
 	case "remove-member":
 		return client.RemoveMember(ctx, *memberID)
 	}

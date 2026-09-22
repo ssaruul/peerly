@@ -125,7 +125,7 @@ dialog.addEventListener("close", placeToast);
 
 function showDialog(...content) {
   document.body.append(toast);
-  dialog.replaceChildren(...content);
+  dialog.replaceChildren(...content.flat(Infinity).filter((child) => child != null && child !== false));
   if (!dialog.open) dialog.showModal();
   placeToast();
 }
@@ -152,11 +152,11 @@ function renderSetup() {
   const form = h("form", { class: "stack", onsubmit: (event) => {
     event.preventDefault();
     const values = formValues(form);
-    act("setup", () => api("POST", joining ? "/join" : "/create-group", values), joining ? "You joined the group" : "Group created. Send your friends the invite from the Group button");
+    act("setup", () => api("POST", joining ? "/join" : "/create-group", values), joining ? "Request sent, waiting for the group owner" : "Group created. Invite friends from Group and invites");
   } },
     field("Server address", "server_url", state.server_url, "saves.example.com", { required: true, draft: "setup-server", hint: "Ask the friend who runs the group's server." }),
     joining
-      ? field("Invite code", "invite_code", "", "8 characters", { required: true, maxlength: 32, draft: "setup-code" })
+      ? field("Invite code", "invite_code", "", "8 characters, from the group owner", { required: true, maxlength: 32, draft: "setup-code", hint: "Each code works once and for one day. After you join, the owner approves your PC." })
       : field("Group name", "name", "", "Friday crew", { required: true, maxlength: 64, draft: "setup-group" }),
     joining ? null : field("Server admin key", "admin_key", "", "printed when the server was installed", { type: "password", draft: "setup-key", hint: "Only needed to create a group, never to join one." }),
     field("Your name", "display_name", "", "how friends see you", { required: true, maxlength: 64, draft: "setup-name" }),
@@ -353,55 +353,100 @@ function worldLive(view) {
   return live;
 }
 
-function inviteText() {
-  return `Join my peerly group "${state.group.name}"\nServer: ${state.server_url}\nInvite code: ${state.group.invite_code}`;
+function inviteText(invite) {
+  return `Join my peerly group "${state.group.name}"\nServer: ${state.server_url}\nInvite code: ${invite.code}\nThe code works once and expires ${new Date(invite.expires_at).toLocaleString()}.`;
 }
 
-function copyInvite() {
-  const text = inviteText();
-  const fallback = () => showDialog(h("h2", {}, "Send this to your friends"), h("pre", { class: "mono" }, text), h("div", { class: "row end" }, h("button", { onclick: closeDialog }, "Close")));
+function copyText(text, done) {
+  const fallback = () => showDialog(h("h2", {}, "Send this to your friend"), h("pre", { class: "mono" }, text), h("div", { class: "row end" }, h("button", { onclick: closeDialog }, "Close")));
   if (!navigator.clipboard) return fallback();
-  navigator.clipboard.writeText(text).then(() => notify("Invite copied, paste it to your friends"), fallback);
+  navigator.clipboard.writeText(text).then(() => notify(done), fallback);
+}
+
+async function createInvite() {
+  let invite;
+  try {
+    invite = await api("POST", "/invite");
+  } catch (error) {
+    notify(error.message, true);
+    return;
+  }
+  const text = inviteText(invite);
+  showDialog(
+    h("h2", {}, "Invite for one friend"),
+    h("p", {}, "Send this to the friend. The code works once and expires in a day. When they join, approve their PC under Group and invites."),
+    h("pre", { class: "mono" }, text),
+    h("div", { class: "row end" }, h("button", { onclick: closeDialog }, "Close"), h("button", { class: "primary", onclick: () => copyText(text, "Invite copied, paste it to your friend") }, "Copy invite")),
+  );
+}
+
+function memberRow(member) {
+  const isPending = member.status === "pending";
+  const labels = [];
+  if (member.id === state.group.owner_id) labels.push("owner");
+  if (member.id === state.member.id) labels.push("you");
+  if (member.device_name) labels.push("PC " + member.device_name);
+  return h("div", { class: "row spread item" },
+    h("div", {}, h("strong", {}, member.display_name), " ", h("span", { class: "muted small" }, labels.join(", "),
+      isPending ? ` asked to join ${formatTime(member.joined_at)}` : "")),
+    state.is_owner && member.id !== state.member.id ? h("div", { class: "row" },
+      isPending ? h("button", { class: "primary", onclick: () => act("member", () => api("POST", `/members/${member.id}/approve`), member.display_name + " can now use the group") }, "Approve") : null,
+      h("button", { class: "danger", onclick: async () => {
+        const sure = await ask(isPending ? `Turn away ${member.display_name}?` : `Remove ${member.display_name}?`, isPending
+          ? ["Their PC never gets access. They need a new invite code to try again."]
+          : ["Their PC loses access to the group's worlds right away. Saves they already uploaded stay."], isPending ? "Turn away" : "Remove", true);
+        if (sure) act("member", () => api("DELETE", `/members/${member.id}`), member.display_name + (isPending ? " was turned away" : " was removed"));
+      } }, isPending ? "Turn away" : "Remove")) : null,
+  );
 }
 
 function openGroup() {
-  const members = state.members.map((member) => h("div", { class: "row spread item" },
-    h("span", {}, member.display_name, member.id === state.group.owner_id ? h("span", { class: "muted small" }, "  owner") : null, member.id === state.member.id ? h("span", { class: "muted small" }, "  you") : null),
-    state.is_owner && member.id !== state.member.id ? h("button", { class: "danger", onclick: async () => {
-      const sure = await ask(`Remove ${member.display_name}?`, [
-        "Their PC loses access to the group's worlds right away. Saves they already uploaded stay.",
-        "If you remove someone because the invite code leaked, also make a new invite code.",
-      ], "Remove", true);
-      if (sure) act("member", () => api("DELETE", `/members/${member.id}`), member.display_name + " was removed");
-    } }, "Remove") : null,
-  ));
+  const waiting = state.members.filter((member) => member.status === "pending");
+  const approved = state.members.filter((member) => member.status !== "pending");
   showDialog(
     h("div", { class: "row spread" }, h("h2", {}, state.group.name), h("button", { onclick: closeDialog }, "Close")),
-    h("h3", {}, "Invite friends"),
-    h("pre", { class: "mono" }, inviteText()),
-    h("div", { class: "row" },
-      h("button", { class: "primary", onclick: copyInvite }, "Copy invite"),
-      state.is_owner ? h("button", { onclick: async () => {
-        const sure = await ask("Make a new invite code?", ["The old code stops working. People who already joined keep their access."], "New code");
-        if (sure) act("invite", () => api("POST", "/invite"), "New invite code created");
-      } }, "New invite code") : null),
-    h("p", { class: "small muted" }, "Anyone with the code can join, download and replace the group's worlds. Share it only with people you trust."),
+    state.is_owner
+      ? h("div", { class: "stack tight" },
+          h("div", { class: "row" }, h("button", { class: "primary", onclick: createInvite }, "Invite a friend")),
+          h("p", { class: "small muted" }, "Each invite code is for one person and works once. Friends who join appear below, and get access when you approve their PC."))
+      : h("p", { class: "small muted" }, "Only the group owner can invite friends and approve new PCs."),
+    waiting.length ? h("h3", {}, "Waiting for approval") : null,
+    waiting.length ? h("div", { class: "history" }, waiting.map(memberRow)) : null,
     h("h3", {}, "Members"),
-    h("div", { class: "history" }, members),
+    h("div", { class: "history" }, approved.map(memberRow)),
+  );
+}
+
+function renderPending() {
+  return h("div", { class: "stack" },
+    h("h1", {}, state.group.name),
+    h("div", { class: "card stack" },
+      h("h2", {}, "Waiting for the group owner"),
+      h("p", {}, `You joined as ${state.member.display_name}. The group owner has to approve this PC before it can see the group's worlds. Ask them to open Group and invites and press Approve.`),
+      h("p", { class: "small muted" }, "This screen updates by itself once you are approved."),
+      state.server_error ? h("p", { class: "banner" }, "Cannot reach the server: " + state.server_error) : null,
+    ),
+    h("p", { class: "small muted" }, `Server ${state.server_url}. `,
+      h("button", { class: "link", onclick: async () => {
+        const sure = await ask("Leave the group on this PC?", ["Your request to join is dropped. You need a new invite code to try again."], "Leave", true);
+        if (sure) act("leave", () => api("POST", "/leave"));
+      } }, "Leave group on this PC")),
   );
 }
 
 function mainParts() {
+  const approvedCount = state.members.filter((member) => member.status !== "pending").length || 1;
   const parts = [{
     key: "header",
-    signature: JSON.stringify([state.group, state.member, state.members.length, state.server_error !== ""]),
+    signature: JSON.stringify([state.group, state.member, state.members, state.server_error !== ""]),
     build: () => h("div", { class: "row spread" },
       h("div", {},
         h("h1", {}, state.group.name),
-        h("p", { class: "muted small" }, `You are ${state.member.display_name}. ${state.members.length || 1} member${state.members.length === 1 ? "" : "s"}.`),
+        h("p", { class: "muted small" }, `You are ${state.member.display_name}. ${approvedCount} member${approvedCount === 1 ? "" : "s"}.` +
+          (state.is_owner && state.members.some((member) => member.status === "pending") ? " Someone is waiting for your approval." : "")),
       ),
       h("div", { class: "row" },
-        h("button", { onclick: openGroup }, "Group and invites"),
+        h("button", { class: state.is_owner && state.members.some((member) => member.status === "pending") ? "attention" : "", onclick: openGroup }, "Group and invites"),
         h("button", { onclick: openNewWorld, disabled: state.server_error !== "" }, "Add world"),
       ),
     ),
@@ -473,11 +518,12 @@ function render() {
   const selection = focusedDraft && typeof focused.selectionStart === "number" ? [focused.selectionStart, focused.selectionEnd] : null;
   for (const input of root.querySelectorAll("input[data-draft]")) drafts.set(input.dataset.draft, input.value);
   root.className = "stack";
-  reconcile(root, state.configured ? mainParts() : [{
-    key: "setup",
-    signature: JSON.stringify([setupTab, pending.has("setup"), state.notice, state.server_url]),
-    build: renderSetup,
-  }]);
+  const parts = !state.configured
+    ? [{ key: "setup", signature: JSON.stringify([setupTab, pending.has("setup"), state.notice, state.server_url]), build: renderSetup }]
+    : state.pending
+      ? [{ key: "pending", signature: JSON.stringify([state.group, state.member, state.server_error]), build: renderPending }]
+      : mainParts();
+  reconcile(root, parts);
   for (const log of root.querySelectorAll("[data-log]")) log.scrollTop = log.scrollHeight;
   for (const input of root.querySelectorAll("input[data-draft]")) {
     if (drafts.has(input.dataset.draft) && input.value !== drafts.get(input.dataset.draft)) input.value = drafts.get(input.dataset.draft);

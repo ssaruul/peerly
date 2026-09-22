@@ -53,11 +53,12 @@ Build the three Windows programs with `make windows` (they land in `dist/`).
 
 Windows SmartScreen warns about programs it has not seen before, because the files are not code signed. Choose More info, then Run anyway, or build from source.
 
-1. One person chooses **Create a group**, enters the server address and the admin key, then sends friends the invite from **Group and invites**.
-2. Friends choose **Join a group** and paste the server address and invite code.
-3. Whoever owns the world presses **Add world**, picks the game, and types the world name exactly as the save is named.
-4. On every PC, the first **Host** or **Settings** shows which files in the save folder belong to the world. Only those files are ever uploaded, backed up or replaced. Characters and other worlds are left alone.
-5. Press **Host** to play. Close the game when done and wait until the card says the world is free.
+1. One person chooses **Create a group**, enters the server address and the admin key. They are the group owner.
+2. The owner presses **Group and invites**, then **Invite a friend**, and sends that friend the text. Each invite code works once and expires after a day.
+3. The friend chooses **Join a group** and pastes the server address and code. Their PC then waits until the owner presses **Approve** next to their name. The owner sees the name they typed and the name of their PC.
+4. Whoever owns the world presses **Add world**, picks the game, and types the world name exactly as the save is named.
+5. On every PC, the first **Host** or **Settings** shows which files in the save folder belong to the world. Only those files are ever uploaded, backed up or replaced. Characters and other worlds are left alone.
+6. Press **Host** to play. Close the game when done and wait until the card says the world is free.
 
 **Sync only** uploads progress made on this PC and downloads the latest save without starting the game.
 
@@ -79,7 +80,7 @@ Windows SmartScreen warns about programs it has not seen before, because the fil
 
 ## What it does not protect you from
 
-- Anyone with the invite code can join, download the group's worlds, and host. The group owner can remove members and make a new invite code. Share the code with people you trust.
+- A member you approved can download the group's worlds, host, and make any branch current. Approve only people you trust; the owner can remove a member at any time.
 - The member token is stored in plain text in the app's settings folder, like most desktop apps store logins.
 - Mid-session backups copy the save while the game is running. They wait until the files have been quiet for 20 seconds and are discarded if a file changes while being read, but a game can still be caught mid-write. If the latest save is such a backup, the next host is warned and can make an earlier save current from History. They can be turned off per world, per PC.
 - One PC belongs to one group at a time. Leaving a group forgets it on that PC.

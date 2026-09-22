@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"peerly/proto"
@@ -91,10 +92,35 @@ func TestHostHandoffOverHTTP(t *testing.T) {
 		t.Fatalf("create group = %d %s", status, payload)
 	}
 	sessionA := decode[proto.SessionResponse](t, payload)
-	_, payload = anonymous.do("POST", "/groups/join", proto.JoinGroupRequest{InviteCode: sessionA.Group.InviteCode, DisplayName: "b"}, nil)
-	sessionB := decode[proto.SessionResponse](t, payload)
 	clientA := &testClient{t: t, baseURL: server.URL, token: sessionA.Token}
+	status, payload = clientA.do("POST", "/groups/invites", nil, nil)
+	if status != http.StatusCreated {
+		t.Fatalf("create invite = %d %s", status, payload)
+	}
+	invite := decode[proto.Invite](t, payload)
+	if status, _ := anonymous.do("POST", "/groups/join", proto.JoinGroupRequest{InviteCode: "NOPE1234", DisplayName: "b"}, nil); status != http.StatusNotFound {
+		t.Fatalf("join with a bad code = %d", status)
+	}
+	_, payload = anonymous.do("POST", "/groups/join", proto.JoinGroupRequest{InviteCode: strings.ToLower(invite.Code), DisplayName: "b", DeviceName: "B-PC"}, nil)
+	sessionB := decode[proto.SessionResponse](t, payload)
 	clientB := &testClient{t: t, baseURL: server.URL, token: sessionB.Token}
+	status, payload = clientB.do("GET", "/worlds", nil, nil)
+	if pendingError := decode[proto.ErrorResponse](t, payload); status != http.StatusForbidden || !pendingError.Pending {
+		t.Fatalf("pending member listing worlds = %d %s", status, payload)
+	}
+	if status, _ := clientB.do("POST", "/worlds", proto.CreateWorldRequest{Name: "sneaky"}, nil); status != http.StatusForbidden {
+		t.Fatalf("pending member creating a world = %d", status)
+	}
+	_, payload = clientB.do("GET", "/me", nil, nil)
+	if me := decode[proto.MeResponse](t, payload); me.Member.Status != proto.MemberPending {
+		t.Fatalf("pending member /me = %s", payload)
+	}
+	if status, _ := clientB.do("POST", "/members/"+sessionB.Member.ID+"/approve", nil, nil); status != http.StatusForbidden {
+		t.Fatalf("pending member approving itself = %d", status)
+	}
+	if status, _ := clientA.do("POST", "/members/"+sessionB.Member.ID+"/approve", nil, nil); status != http.StatusNoContent {
+		t.Fatalf("owner approving b = %d", status)
+	}
 
 	if status, _ := anonymous.do("GET", "/worlds", nil, nil); status != http.StatusUnauthorized {
 		t.Fatalf("unauthenticated list = %d", status)
@@ -155,8 +181,8 @@ func TestHostHandoffOverHTTP(t *testing.T) {
 	if status, _ := clientA.do("POST", "/worlds", longName, nil); status != http.StatusBadRequest {
 		t.Fatalf("overlong world name = %d", status)
 	}
-	if status, _ := clientB.do("POST", "/groups/invite", nil, nil); status != http.StatusForbidden {
-		t.Fatalf("non-owner invite rotation = %d", status)
+	if status, _ := clientB.do("POST", "/groups/invites", nil, nil); status != http.StatusForbidden {
+		t.Fatalf("non-owner invite creation = %d", status)
 	}
 	if status, _ := clientB.do("DELETE", "/members/"+sessionA.Member.ID, nil, nil); status != http.StatusForbidden {
 		t.Fatalf("non-owner member removal = %d", status)

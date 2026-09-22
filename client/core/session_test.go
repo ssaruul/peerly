@@ -139,15 +139,24 @@ func newGroup(t *testing.T, names ...string) *group {
 	ctx := context.Background()
 	anonymous := NewAPIClient(server.url, "")
 	result := &group{server: server}
-	inviteCode := ""
+	var owner *APIClient
 	for index, name := range names {
 		var session proto.SessionResponse
 		var err error
 		if index == 0 {
 			session, err = anonymous.CreateGroup(ctx, "friends", name)
-			inviteCode = session.Group.InviteCode
+			if err == nil {
+				owner = NewAPIClient(server.url, session.Token)
+			}
 		} else {
-			session, err = anonymous.JoinGroup(ctx, inviteCode, name)
+			invite, inviteErr := owner.CreateInvite(ctx)
+			if inviteErr != nil {
+				t.Fatal(inviteErr)
+			}
+			session, err = anonymous.JoinGroup(ctx, invite.Code, name, "PC-"+name)
+			if err == nil {
+				err = owner.ApproveMember(ctx, session.Member.ID)
+			}
 		}
 		if err != nil {
 			t.Fatal(err)

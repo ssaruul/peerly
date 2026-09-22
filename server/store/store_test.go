@@ -35,10 +35,18 @@ func newFixture(t *testing.T, memberCount int) *fixture {
 	}
 	f.members = append(f.members, session.Member)
 	for index := 1; index < memberCount; index++ {
-		joined, err := database.JoinGroup(ctx, session.Group.InviteCode, string(rune('a'+index)))
+		invite, err := database.CreateInvite(ctx, session.Member)
 		if err != nil {
 			t.Fatal(err)
 		}
+		joined, err := database.JoinGroup(ctx, invite.Code, string(rune('a'+index)), "PC-"+string(rune('a'+index)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := database.ApproveMember(ctx, session.Member, joined.Member.ID); err != nil {
+			t.Fatal(err)
+		}
+		joined.Member.Status = proto.MemberApproved
 		f.members = append(f.members, joined.Member)
 	}
 	f.world, err = database.CreateWorld(ctx, session.Member, proto.CreateWorldRequest{Name: "base", GameName: "valheim"})
@@ -346,22 +354,66 @@ func TestPruneKeepsHeadEvenWhenClockJumpsBack(t *testing.T) {
 	}
 }
 
-func TestOwnerCanRotateInviteAndRevokeMembers(t *testing.T) {
+func TestInvitesAreOneUseAndTimeLimited(t *testing.T) {
 	f := newFixture(t, 2)
 	ctx := context.Background()
 	owner, friend := f.members[0], f.members[1]
-	if _, err := f.store.RotateInvite(ctx, friend); !errors.Is(err, ErrForbidden) {
-		t.Fatalf("non-owner rotate error = %v", err)
+	if _, err := f.store.CreateInvite(ctx, friend); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("non-owner invite error = %v", err)
 	}
-	me, _ := f.store.Me(ctx, owner)
-	oldCode := me.Group.InviteCode
-	newCode, err := f.store.RotateInvite(ctx, owner)
-	if err != nil || newCode == oldCode {
-		t.Fatalf("rotate: %v %s", err, newCode)
+	invite, err := f.store.CreateInvite(ctx, owner)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := f.store.JoinGroup(ctx, oldCode, "stranger"); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("old invite code still works: %v", err)
+	joined, err := f.store.JoinGroup(ctx, invite.Code, "c", "PC-c")
+	if err != nil {
+		t.Fatal(err)
 	}
+	if joined.Member.Status != proto.MemberPending {
+		t.Fatalf("new member status = %s", joined.Member.Status)
+	}
+	if _, err := f.store.JoinGroup(ctx, invite.Code, "stranger", "x"); !errors.Is(err, ErrBadInvite) {
+		t.Fatalf("used invite code accepted again: %v", err)
+	}
+	stale, _ := f.store.CreateInvite(ctx, owner)
+	f.clock = f.clock.Add(InviteLifetime + time.Minute)
+	if _, err := f.store.JoinGroup(ctx, stale.Code, "late", "x"); !errors.Is(err, ErrBadInvite) {
+		t.Fatalf("expired invite code accepted: %v", err)
+	}
+	byToken, err := f.store.MemberByToken(ctx, joined.Token)
+	if err != nil || byToken.Status != proto.MemberPending {
+		t.Fatalf("pending member by token: %+v %v", byToken, err)
+	}
+	if err := f.store.ApproveMember(ctx, friend, joined.Member.ID); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("non-owner approve error = %v", err)
+	}
+	if err := f.store.ApproveMember(ctx, owner, joined.Member.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.ApproveMember(ctx, owner, joined.Member.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("second approve error = %v", err)
+	}
+	byToken, _ = f.store.MemberByToken(ctx, joined.Token)
+	if byToken.Status != proto.MemberApproved {
+		t.Fatalf("status after approval = %s", byToken.Status)
+	}
+	turnedAway, _ := f.store.CreateInvite(ctx, owner)
+	rejected, _ := f.store.JoinGroup(ctx, turnedAway.Code, "d", "PC-d")
+	if err := f.store.RevokeMember(ctx, owner, rejected.Member.ID); err != nil {
+		t.Fatalf("turning away a pending member: %v", err)
+	}
+	if _, err := f.store.MemberByToken(ctx, rejected.Token); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("turned away member still has a token: %v", err)
+	}
+	if err := f.store.ApproveMember(ctx, owner, rejected.Member.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a turned away member could be approved afterwards: %v", err)
+	}
+}
+
+func TestOwnerCanRevokeMembers(t *testing.T) {
+	f := newFixture(t, 2)
+	ctx := context.Background()
+	owner, friend := f.members[0], f.members[1]
 	if err := f.store.RevokeMember(ctx, friend, owner.ID); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("non-owner revoke error = %v", err)
 	}
@@ -377,7 +429,7 @@ func TestOwnerCanRotateInviteAndRevokeMembers(t *testing.T) {
 	if _, err := f.store.AcquireLease(ctx, owner, f.world.ID); err != nil {
 		t.Fatalf("revoked member's lease still blocks the world: %v", err)
 	}
-	me, _ = f.store.Me(ctx, owner)
+	me, _ := f.store.Me(ctx, owner)
 	if len(me.Members) != 1 {
 		t.Fatalf("revoked member still listed: %+v", me.Members)
 	}

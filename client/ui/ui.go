@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io/fs"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -60,6 +61,7 @@ type State struct {
 	Member      proto.Member   `json:"member"`
 	Members     []proto.Member `json:"members"`
 	IsOwner     bool           `json:"is_owner"`
+	Pending     bool           `json:"pending"`
 	Worlds      []WorldView    `json:"worlds"`
 	Hosting     HostingState   `json:"hosting"`
 	ServerError string         `json:"server_error"`
@@ -106,7 +108,8 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("POST /api/create-group", a.createGroup)
 	mux.HandleFunc("POST /api/join", a.joinGroup)
 	mux.HandleFunc("POST /api/leave", a.leave)
-	mux.HandleFunc("POST /api/invite", a.rotateInvite)
+	mux.HandleFunc("POST /api/invite", a.createInvite)
+	mux.HandleFunc("POST /api/members/{id}/approve", a.approveMember)
 	mux.HandleFunc("DELETE /api/members/{id}", a.removeMember)
 	mux.HandleFunc("POST /api/worlds", a.createWorld)
 	mux.HandleFunc("DELETE /api/worlds/{id}", a.deleteWorld)
@@ -173,6 +176,9 @@ func friendly(err error) string {
 	}
 	if core.IsUnauthorized(err) {
 		return "the server no longer recognizes this PC. Leave the group on this PC and join again with an invite code"
+	}
+	if core.IsPending(err) {
+		return "the group owner has not approved this PC yet"
 	}
 	var apiError *core.APIError
 	if errors.As(err, &apiError) {
@@ -249,10 +255,14 @@ func (a *App) state(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
 		defer cancel()
 		client := a.client()
-		statuses, err := client.Worlds(ctx)
-		var me proto.MeResponse
-		if err == nil {
-			me, err = client.Me(ctx)
+		me, err := client.Me(ctx)
+		var statuses []proto.WorldStatus
+		if err == nil && me.Member.Status == proto.MemberApproved {
+			statuses, err = client.Worlds(ctx)
+		}
+		if err == nil && me.Member.Status != saved.Member.Status {
+			a.config.Update(func(stored *core.Config) { stored.Member = me.Member })
+			state.Member = me.Member
 		}
 		a.mutex.Lock()
 		if err == nil {
@@ -267,6 +277,7 @@ func (a *App) state(w http.ResponseWriter, r *http.Request) {
 			state.Group = group
 		}
 		state.Members = append(state.Members, members...)
+		state.Pending = state.Member.Status == proto.MemberPending
 		state.IsOwner = state.Group.OwnerID != "" && state.Group.OwnerID == saved.Member.ID
 		for _, status := range statuses {
 			local := a.config.World(status.World.ID)
@@ -315,7 +326,8 @@ func (a *App) openSession(w http.ResponseWriter, r *http.Request, creating bool)
 	if creating {
 		session, err = client.CreateGroup(ctx, request.Name, request.DisplayName)
 	} else {
-		session, err = client.JoinGroup(ctx, request.InviteCode, request.DisplayName)
+		deviceName, _ := os.Hostname()
+		session, err = client.JoinGroup(ctx, request.InviteCode, request.DisplayName, deviceName)
 	}
 	if err != nil {
 		fail(w, err)
@@ -335,7 +347,7 @@ func (a *App) openSession(w http.ResponseWriter, r *http.Request, creating bool)
 		fail(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"invite_code": session.Group.InviteCode})
+	writeJSON(w, http.StatusOK, map[string]string{"status": session.Member.Status})
 }
 
 func (a *App) createGroup(w http.ResponseWriter, r *http.Request) {
@@ -366,13 +378,21 @@ func (a *App) leave(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
-func (a *App) rotateInvite(w http.ResponseWriter, r *http.Request) {
-	code, err := a.client().RotateInvite(r.Context())
+func (a *App) createInvite(w http.ResponseWriter, r *http.Request) {
+	invite, err := a.client().CreateInvite(r.Context())
 	if err != nil {
 		fail(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"invite_code": code})
+	writeJSON(w, http.StatusOK, invite)
+}
+
+func (a *App) approveMember(w http.ResponseWriter, r *http.Request) {
+	if err := a.client().ApproveMember(r.Context(), r.PathValue("id")); err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 func (a *App) removeMember(w http.ResponseWriter, r *http.Request) {

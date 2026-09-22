@@ -26,6 +26,7 @@ type APIError struct {
 	Status  int
 	Message string
 	Lease   *proto.Lease
+	Pending bool
 }
 
 func (e *APIError) Error() string {
@@ -48,6 +49,11 @@ func IsLeaseLost(err error) bool {
 func IsUnauthorized(err error) bool {
 	var apiError *APIError
 	return errors.As(err, &apiError) && apiError.Status == http.StatusUnauthorized
+}
+
+func IsPending(err error) bool {
+	var apiError *APIError
+	return errors.As(err, &apiError) && apiError.Pending
 }
 
 func IsPermanent(err error) bool {
@@ -152,7 +158,7 @@ func (c *APIClient) send(ctx context.Context, method string, path string, body i
 		if json.Unmarshal(raw, &decoded) != nil || decoded.Error == "" {
 			decoded.Error = fmt.Sprintf("the server answered %s, check the server address", response.Status)
 		}
-		return nil, &APIError{Status: response.StatusCode, Message: decoded.Error, Lease: decoded.Lease}
+		return nil, &APIError{Status: response.StatusCode, Message: decoded.Error, Lease: decoded.Lease, Pending: decoded.Pending}
 	}
 	return response, nil
 }
@@ -183,9 +189,9 @@ func (c *APIClient) CreateGroup(ctx context.Context, name string, displayName st
 	return session, err
 }
 
-func (c *APIClient) JoinGroup(ctx context.Context, inviteCode string, displayName string) (proto.SessionResponse, error) {
+func (c *APIClient) JoinGroup(ctx context.Context, inviteCode string, displayName string, deviceName string) (proto.SessionResponse, error) {
 	session := proto.SessionResponse{}
-	err := c.call(ctx, http.MethodPost, "/groups/join", proto.JoinGroupRequest{InviteCode: inviteCode, DisplayName: displayName}, &session)
+	err := c.call(ctx, http.MethodPost, "/groups/join", proto.JoinGroupRequest{InviteCode: inviteCode, DisplayName: displayName, DeviceName: deviceName}, &session)
 	return session, err
 }
 
@@ -252,9 +258,13 @@ func (c *APIClient) DeleteWorld(ctx context.Context, worldID string) error {
 	return c.call(ctx, http.MethodDelete, "/worlds/"+worldID, nil, nil)
 }
 
-func (c *APIClient) RotateInvite(ctx context.Context) (string, error) {
-	response := proto.InviteResponse{}
-	return response.InviteCode, c.call(ctx, http.MethodPost, "/groups/invite", nil, &response)
+func (c *APIClient) CreateInvite(ctx context.Context) (proto.Invite, error) {
+	invite := proto.Invite{}
+	return invite, c.call(ctx, http.MethodPost, "/groups/invites", nil, &invite)
+}
+
+func (c *APIClient) ApproveMember(ctx context.Context, memberID string) error {
+	return c.call(ctx, http.MethodPost, "/members/"+memberID+"/approve", nil, nil)
 }
 
 func (c *APIClient) RemoveMember(ctx context.Context, memberID string) error {
