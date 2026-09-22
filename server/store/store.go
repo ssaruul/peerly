@@ -234,7 +234,7 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
-	return &Store{db: db, Now: time.Now, LeaseTTL: 3 * time.Minute, KeepMain: 20, KeepCheckpoints: 3, KeepForks: 30, ForkGrace: 30 * 24 * time.Hour}, nil
+	return &Store{db: db, Now: time.Now, LeaseTTL: 3 * time.Minute, KeepMain: 5, KeepCheckpoints: 3, KeepForks: 30, ForkGrace: 30 * 24 * time.Hour}, nil
 }
 
 func (s *Store) Close() error {
