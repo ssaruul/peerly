@@ -475,10 +475,10 @@ func pruneBackups(backupRoot string) error {
 	}
 	sort.Strings(names)
 	for len(names) > keptBackups {
-		if err := os.RemoveAll(filepath.Join(backupRoot, names[0])); err != nil {
+		if err := os.RemoveAll(filepath.Join(backupRoot, names[1])); err != nil {
 			return err
 		}
-		names = names[1:]
+		names = append(names[:1], names[2:]...)
 	}
 	return nil
 }

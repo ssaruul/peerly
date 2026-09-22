@@ -5,6 +5,7 @@ package core
 import (
 	"archive/tar"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -241,5 +242,26 @@ func TestDamagedSettingsFallBackToThePreviousCopy(t *testing.T) {
 	}
 	if recovered.Snapshot().Token != "precious-member-token" || recovered.Notice == "" {
 		t.Fatalf("token lost after a truncated settings file: %+v notice=%q", recovered.Snapshot(), recovered.Notice)
+	}
+}
+
+func TestTheFirstLocalBackupIsKeptForever(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "backups")
+	for index := range keptBackups + 4 {
+		dir := filepath.Join(root, fmt.Sprintf("2026%02d01-000000.000", index+1))
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := pruneBackups(root); err != nil {
+			t.Fatal(err)
+		}
+	}
+	entries, _ := os.ReadDir(root)
+	names := []string{}
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	if len(names) != keptBackups || names[0] != "20260101-000000.000" || names[len(names)-1] != fmt.Sprintf("2026%02d01-000000.000", keptBackups+4) {
+		t.Fatalf("kept backups = %v", names)
 	}
 }

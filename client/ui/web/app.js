@@ -172,7 +172,10 @@ function renderSetup() {
   const form = h("form", { class: "stack", onsubmit: (event) => {
     event.preventDefault();
     const values = formValues(form);
-    act("setup", () => api("POST", joining ? "/join" : "/create-group", values), joining ? "Request sent, waiting for the group owner" : "Group created. Invite friends from Group and invites");
+    act("setup", async () => {
+      await api("POST", joining ? "/join" : "/create-group", values);
+      drafts.clear();
+    }, joining ? "Request sent, waiting for the group owner" : "Group created. Invite friends from Group and invites");
   } },
     field("Server address", "server_url", state.server_url, "saves.example.com", { required: true, draft: "setup-server", hint: "Ask the friend who runs the group's server." }),
     joining
@@ -460,7 +463,7 @@ function renderPending() {
     h("p", { class: "small muted" }, `Server ${state.server_url}. `,
       h("button", { class: "link", onclick: async () => {
         const sure = await ask("Leave the group on this PC?", ["Your request to join is dropped. You need a new invite code to try again."], "Leave", true);
-        if (sure) act("leave", () => api("POST", "/leave"));
+        if (sure) act("leave", async () => { await api("POST", "/leave"); drafts.clear(); });
       } }, "Leave group on this PC")),
   );
 }
@@ -514,10 +517,25 @@ function mainParts() {
         ];
         if (state.is_owner) lines.unshift(h("p", { class: "banner" }, "You are the group owner. If you leave without making someone else the owner first (Group and invites, Make owner), nobody can invite friends or approve PCs any more. Only the person running the server can then recover the group."));
         const sure = await ask("Leave the group on this PC?", lines, "Leave", true);
-        if (sure) act("leave", () => api("POST", "/leave"));
-      } }, "Leave group on this PC")),
+        if (sure) act("leave", async () => { await api("POST", "/leave"); drafts.clear(); });
+      } }, "Leave group on this PC"),
+      " ", h("button", { class: "link", onclick: openServerChange }, "Change server address")),
   });
   return parts;
+}
+
+function openServerChange() {
+  const form = h("form", { class: "stack", onsubmit: async (event) => {
+    event.preventDefault();
+    const saved = await act("server-url", () => api("POST", "/server-url", formValues(form)), "Server address updated");
+    if (saved) closeDialog();
+  } },
+    h("h2", {}, "Change server address"),
+    h("p", { class: "small muted" }, "Use this when the group's server moved to a new domain. This PC keeps its membership; the new address must be the same server with the same data."),
+    field("New server address", "server_url", state.server_url, "saves.example.com", { required: true }),
+    h("div", { class: "row" }, h("button", { class: "primary", type: "submit" }, "Check and save"), h("button", { type: "button", onclick: closeDialog }, "Cancel")),
+  );
+  showDialog(form);
 }
 
 const signatures = new WeakMap();

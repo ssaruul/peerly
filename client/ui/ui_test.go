@@ -245,3 +245,33 @@ func TestShutdownReasonFollowsTheSession(t *testing.T) {
 		t.Fatalf("no upload reason announced: %q", reasons)
 	}
 }
+
+func TestChangingTheServerAddressKeepsMembershipAndRefusesStrangers(t *testing.T) {
+	f := newFixture(t)
+	before := f.app.config.Snapshot().ServerURL
+	stranger := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			writeJSON(w, http.StatusOK, map[string]string{"service": "peerly"})
+			return
+		}
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unknown token"})
+	}))
+	defer stranger.Close()
+	if status, _ := f.call(t, "POST", "/api/server-url", map[string]string{"server_url": stranger.URL}, nil); status != http.StatusUnauthorized {
+		t.Fatalf("switching to a server that does not know this PC = %d", status)
+	}
+	if status, _ := f.call(t, "POST", "/api/server-url", map[string]string{"server_url": "http://127.0.0.1:1"}, nil); status != http.StatusBadGateway {
+		t.Fatalf("switching to a dead address = %d", status)
+	}
+	if f.app.config.Snapshot().ServerURL != before {
+		t.Fatal("a refused switch changed the stored address")
+	}
+	mirror := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, before+r.URL.RequestURI(), http.StatusPermanentRedirect)
+	}))
+	defer mirror.Close()
+	status, answer := f.call(t, "POST", "/api/server-url", map[string]string{"server_url": mirror.URL}, nil)
+	if status != http.StatusOK || answer["server_url"] != before {
+		t.Fatalf("switching to a redirecting mirror of the same server = %d %v", status, answer)
+	}
+}

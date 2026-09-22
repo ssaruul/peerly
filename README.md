@@ -46,7 +46,7 @@ From then on: press **Host** to play, close the game when done, wait until the w
 
 **Do all my friends need peerly?** Only those who want to host. Friends who only ever join someone else's game do not need it. Their progress is inside the host's world file, which the host's peerly uploads.
 
-**Do I have to find my save files myself?** Usually not. The person who adds the world picks the game from a list, and the folder is pre-filled for everyone. You only confirm that the files shown are the right ones.
+**Do I have to find my save files myself?** Usually not. The person who adds the world picks the game from a list, and the folder is pre-filled for everyone. You only confirm that the files shown are the right ones. The entries for Valheim and RuneScape: Dragonwilds were checked against public documentation, not yet on a real PC.
 
 **What if two of us press Host at the same time?** The server gives the lease to the first request. The other person is told who is hosting.
 
@@ -84,6 +84,8 @@ Copy the dated folder somewhere safe. Restoring is copying it back to `/var/lib/
 The server keeps, per world, the 20 most recent session saves, 3 mid-session backups, and every branch save younger than 30 days (plus the 30 newest older ones). Older ones are removed automatically.
 
 **Upgrading**: replace the binary and restart the service. The database is upgraded automatically. A database written by a newer server is refused rather than damaged.
+
+**Moving to a new domain**: copy `/var/lib/peerly` to the new machine and point the domain at it. Every player then uses *Change server address* at the bottom of the app; their membership carries over.
 
 **If the owner disappears** (lost PC, left the group without handing over), nobody can invite or approve any more. Whoever has the admin key fixes that from any PC:
 

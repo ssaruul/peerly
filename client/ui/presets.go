@@ -24,7 +24,7 @@ var Presets = []Preset{
 		Launch:   "steam://rungameid/1374490",
 		Process:  "RSDragonwilds-Win64-Shipping.exe",
 		Include:  "{world}.sav",
-		Note:     "Replace {world} with the exact world file name. Confirm the process name in Task Manager while the game runs. Characters stay on each PC.",
+		Note:     "One .sav file per world, named after the world; its .sav.backup twin is left out on purpose. Characters live in SaveCharacters and stay on each PC.",
 	},
 	{
 		Game: "Other game",

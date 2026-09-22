@@ -31,6 +31,7 @@ const usage = `peerly-cli <command> [flags]
   approve        -member ID       (owner) approve a PC that joined with an invite
   make-owner     -member ID       (owner) hand the group to another member
   remove-member  -member ID
+  set-server     -server URL     point this PC at the group's server under a new address
   admin-groups   -server URL -admin-key KEY               list groups on the server
   admin-recover  -server URL -admin-key KEY -group ID -as NAME   become the owner of a group whose owner is gone
 `
@@ -171,6 +172,25 @@ func run(command string, args []string) error {
 		return errors.New("not in a group yet, run create-group or join first")
 	}
 	switch command {
+	case "set-server":
+		normalizedURL, err := core.NormalizeServerURL(*serverURL)
+		if err != nil {
+			return err
+		}
+		moved := core.NewAPIClient(normalizedURL, saved.Token)
+		resolvedURL, err := moved.ResolveBaseURL(ctx)
+		if err != nil {
+			return err
+		}
+		moved.BaseURL = resolvedURL
+		me, err := moved.Me(ctx)
+		if err != nil {
+			return err
+		}
+		if me.Group.ID != saved.Group.ID {
+			return errors.New("that server knows this PC as a member of a different group, nothing was changed")
+		}
+		return config.Update(func(stored *core.Config) { stored.ServerURL = resolvedURL })
 	case "status":
 		me, err := client.Me(ctx)
 		if err != nil {

@@ -110,6 +110,7 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("POST /api/create-group", a.createGroup)
 	mux.HandleFunc("POST /api/join", a.joinGroup)
 	mux.HandleFunc("POST /api/leave", a.leave)
+	mux.HandleFunc("POST /api/server-url", a.changeServerURL)
 	mux.HandleFunc("POST /api/invite", a.createInvite)
 	mux.HandleFunc("POST /api/members/{id}/approve", a.approveMember)
 	mux.HandleFunc("POST /api/members/{id}/owner", a.transferOwnership)
@@ -387,6 +388,55 @@ func (a *App) createGroup(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) joinGroup(w http.ResponseWriter, r *http.Request) {
 	a.openSession(w, r, false)
+}
+
+func (a *App) changeServerURL(w http.ResponseWriter, r *http.Request) {
+	request := struct {
+		ServerURL string `json:"server_url"`
+	}{}
+	if !decode(w, r, &request) {
+		return
+	}
+	if a.HostingActive() {
+		refuse(w, http.StatusConflict, "stop hosting before changing the server address")
+		return
+	}
+	serverURL, err := core.NormalizeServerURL(request.ServerURL)
+	if err != nil {
+		refuse(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	saved := a.config.Snapshot()
+	client := core.NewAPIClient(serverURL, saved.Token)
+	resolvedURL, err := client.ResolveBaseURL(ctx)
+	if err != nil {
+		refuse(w, http.StatusBadGateway, "No peerly server answers at "+serverURL+": "+friendly(err))
+		return
+	}
+	client.BaseURL = resolvedURL
+	me, err := client.Me(ctx)
+	if err != nil {
+		if core.IsUnauthorized(err) {
+			refuse(w, http.StatusUnauthorized, "The server at "+resolvedURL+" does not know this PC. It is a different server, or your group was not moved there. Nothing was changed")
+			return
+		}
+		fail(w, err)
+		return
+	}
+	if me.Group.ID != saved.Group.ID {
+		refuse(w, http.StatusConflict, "The server at "+resolvedURL+" knows this PC as a member of a different group. Nothing was changed")
+		return
+	}
+	a.mutex.Lock()
+	a.cachedStatuses, a.cachedMembers, a.cachedGroup = nil, nil, proto.Group{}
+	a.mutex.Unlock()
+	if err := a.config.Update(func(stored *core.Config) { stored.ServerURL = resolvedURL }); err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"server_url": resolvedURL})
 }
 
 func (a *App) leave(w http.ResponseWriter, r *http.Request) {
