@@ -12,8 +12,9 @@ The server holds the save history of each world and at most one **host lease** p
 
 1. Pressing **Host** asks the server for the lease. The first person gets it, everyone else is told who is hosting and sees the join code the host shared.
 2. The host's app downloads the latest save, swaps it into the game's save folder, and starts the game.
-3. While the game runs the app renews the lease every 30 seconds. If the PC dies, the lease frees itself after 3 minutes.
-4. When the game closes, the save is uploaded and the lease is released.
+3. While the game runs, the app pings the server every 30 seconds to say the host is still there. The ping carries no save data. If the host's PC dies, the pings stop and the server frees the world 3 minutes after the last one.
+4. Every 10 minutes (adjustable per world, or off), once the save files have been quiet for 20 seconds, the app uploads a mid-session backup. If the host's PC dies, the group loses at most those minutes.
+5. When the game closes, the save is uploaded and the lease is released.
 
 Only the lease holder can move the group's current save forward. Anything else, for example progress made offline or a host whose connection dropped long enough for someone else to take over, is stored as a **separate branch**. Nothing is overwritten and nothing is thrown away: the group opens History and chooses whether to make that branch the current world.
 
