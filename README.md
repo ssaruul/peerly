@@ -1,140 +1,145 @@
 # peerly
 
-Share one co-op game world with your friends when nobody wants to pay for a dedicated server.
+**Play your co-op world with friends even when the usual host is not around.**
 
-Many survival and co-op games (Valheim, RuneScape: Dragonwilds, Enshrouded and others) keep the world on the PC of whoever hosts. If that person is away, nobody else can continue. peerly keeps the world file on a small server you run yourself, and hands it to whichever friend hosts next.
+In games like Valheim, RuneScape: Dragonwilds or Enshrouded, the world lives on the computer of whoever hosts. If that friend is busy tonight, nobody else can continue the world. Renting a dedicated server fixes this, but it costs money every month for something a group of four uses a few evenings a week.
 
-It does not replace the game's multiplayer. Friends still join the host through the game's own invite or join code. peerly only moves the save and decides who may host.
+peerly is a small free program that keeps the group's world in one shared place and hands it to whoever wants to host next. Whoever is free presses **Host**, the newest version of the world lands on their PC, they play with the others, and when they close the game the world is saved back for everyone.
 
-## How it decides which copy is the real one
+peerly does not change how the game does multiplayer. Your friends still join you inside the game as usual. peerly only makes sure the right save file is on the right PC, and that two people never play two different versions of the same world.
 
-The server holds the save history of each world and at most one **host lease** per world.
+## What is the catch?
 
-1. Pressing **Host** asks the server for the lease. The first person gets it, everyone else is told who is hosting and sees the join code the host shared.
-2. The host's app downloads the latest save, swaps it into the game's save folder, and starts the game.
-3. While the game runs, the app pings the server every 30 seconds to say the host is still there. The ping carries no save data. If the host's PC dies, the pings stop and the server frees the world 3 minutes after the last one.
-4. Every 10 minutes (adjustable per world, or off), once the save files have been quiet for 20 seconds, the app uploads a mid-session backup. If the host's PC dies, the group loses at most those minutes.
-5. When the game closes, the save is uploaded and the lease is released.
+Someone in the group needs to run a tiny server. That can be almost any always-on Linux machine, including the free tier at Oracle Cloud, so the money cost can be zero. Setting it up takes one person an hour and a willingness to paste some commands into a terminal. Everyone else only installs the app.
 
-Only the lease holder can move the group's current save forward. Anything else, for example progress made offline or a host whose connection dropped long enough for someone else to take over, is stored as a **separate branch**. Nothing is overwritten and nothing is thrown away: the group opens History and chooses whether to make that branch the current world.
+If nobody in your group wants to do that, [SaveSync](https://www.savesync.games/) on Steam does a similar job for a few dollars per person and needs no server.
 
-## Status
+## Status: early
 
-Early. The server, the sync logic and the interface are covered by automated tests, including a browser-driven end to end suite, all run on Linux.
+peerly works in automated tests on Linux, including a test suite that clicks through the app in a real browser. It has **not yet been used on a real Windows PC with a real game by the author**. If you try it, please open an issue and say what happened, good or bad. Until then, use it with a world you have backed up yourself.
 
-The Windows window app (`peerly.exe`) compiles but has **not yet been run on a real Windows PC by the author**. `peerly-browser.exe` is the same app shown in your normal browser and is the safer choice until the window app has field reports. Please open an issue with what you find.
+## How it works, in plain words
 
-Game presets for Valheim and Dragonwilds are starting points. Every player checks the folder and the matched files on their own PC before the first sync, so a wrong preset is caught before it can touch anything.
+Think of the world as a library book. The server holds the book, and there is one **host lease**, which is the right to hold the book right now.
 
-## Set up the server
+1. You press **Host**. If nobody has the lease, you get it. If a friend already has it, you are told so and shown the code to join their game.
+2. Your app downloads the newest save and puts it where the game expects it. The files that were there before are kept in a backup folder.
+3. The game starts. While it runs, your app pings the server every 30 seconds to say "still here". If your PC dies, the pings stop and after 3 minutes the server frees the world for the others.
+4. Every 10 minutes (you can change or disable this), after the game has been quiet for a moment, a backup of the world is uploaded, so a crash costs the group at most those minutes.
+5. When you close the game, the save is uploaded and the lease is released. The next host gets exactly what you left.
 
-Any small Linux machine works, including the free ARM instances of Oracle Cloud. You need a domain name that points at it (a free DuckDNS name is fine) because the apps talk to the server over HTTPS.
+**What if something goes wrong?** Nothing is ever overwritten silently. If someone played a version of the world that is not the current one, for example because they played offline or their connection dropped and a friend took over, that version is kept as a **separate branch**. The group opens **History** and decides which version should be the current world. Older versions stay in History too, so a bad decision can be undone.
 
-```sh
-make server-arm64            # or server-amd64
-scp dist/peerly-server-linux-arm64 deploy/* you@server:
-ssh you@server ./install.sh ./peerly-server-linux-arm64
-```
+## For players: setting up the app
 
-The installer creates a `peerly` system user, a systemd service listening on `127.0.0.1:8787`, and prints the **admin key**. The admin key is needed once, to create a group.
+You need Windows 10 or 11.
 
-Put Caddy in front for HTTPS: install Caddy, copy `deploy/Caddyfile` to `/etc/caddy/Caddyfile`, replace `saves.example.com`, and reload Caddy.
+1. Get `peerly.exe` (or `peerly-browser.exe`, which shows the same app in your web browser) from the person in your group who runs the server, or build it yourself, see below. Windows will warn that the program is unknown because it is not signed; choose *More info*, then *Run anyway*.
+2. Ask the group owner for an **invite**. It contains the server address and an 8-character code. Each code works once and for one day.
+3. Open peerly, choose **Join a group**, paste the address and the code, type your name.
+4. Your screen says *Waiting for the group owner*. The owner sees your name and your PC's name and presses **Approve**. The screen updates by itself.
+5. The first time you press **Host** or **Settings** on a world, peerly shows which files in the game's save folder belong to that world. Check the list, press *Looks right, continue*. Only those files are ever touched. Your characters and other worlds are left alone.
 
-Oracle Cloud blocks ports 80 and 443 in two places, the VCN security list and the instance's own iptables. The installer prints the exact commands.
+From then on: press **Host** to play, close the game when done, wait until the world shows as free. **Sync only** uploads what you have and downloads the newest save without starting the game.
 
-Data lives in `/var/lib/peerly` (one SQLite file plus one file per save). To back it up while the server runs:
+### Questions players ask
+
+**Do all my friends need peerly?** Only those who want to host. Friends who only ever join someone else's game do not need it. Their progress is inside the host's world file, which the host's peerly uploads.
+
+**Do I have to find my save files myself?** Usually not. The person who adds the world picks the game from a list, and the folder is pre-filled for everyone. You only confirm that the files shown are the right ones.
+
+**What if two of us press Host at the same time?** The server gives the lease to the first request. The other person is told who is hosting.
+
+**What if my PC crashes while hosting?** The world is freed after 3 minutes. The group continues from the last mid-session backup, at most 10 minutes old. When you are back, peerly uploads your last state as a separate branch so nothing is lost.
+
+**What if my internet drops for a while during a session?** peerly keeps trying to ping and to upload in the background and tells you so. As long as no friend took over hosting in the meantime, your session continues on the current world. If someone did take over, your progress becomes a separate branch.
+
+**Can peerly delete my save?** It replaces the world files only after copying them to its backup folder (shown in Settings), and only the files that match the world's filter. Files it does not recognise are never touched.
+
+**What can go wrong that peerly cannot fix?** Steam Cloud may put an old save back after peerly replaced it, so turn Steam Cloud off for the game (in Valheim, move the world to local storage). A few games write the host's identity inside the save (Palworld is the known case); those need more than a file copy and are not supported.
+
+## For the friend who runs the server
+
+You need a Linux machine that is always on and reachable from the internet, and a domain name that points at it. A free name from DuckDNS is fine. The free ARM instance on Oracle Cloud works and costs nothing.
+
+You do not need to understand the server. You need to do these steps once.
+
+1. On your own PC, build the server program with `make server-arm64` (for Oracle's ARM machines) or `make server-amd64`. This needs Go installed. The file lands in `dist/`.
+2. Copy that file and the `deploy/` folder to the machine, then run `./install.sh ./peerly-server-linux-arm64` there. This creates a system user, starts the service, makes it start again after reboots, and prints an **admin key**. Keep that key; it is only needed to create a group and to rescue a group whose owner has vanished.
+3. Install [Caddy](https://caddyserver.com/), copy `deploy/Caddyfile` to `/etc/caddy/Caddyfile`, replace `saves.example.com` with your domain name, and reload Caddy. Caddy gives your server HTTPS automatically.
+4. On Oracle Cloud, open ports 80 and 443 in two places: the *security list* of your network in the web console, and the machine's own firewall. `install.sh` prints the exact commands.
+5. In peerly on your PC choose **Create a group**, enter your domain and the admin key. You are now the group owner. Invite friends from **Group and invites**.
+
+The server has exactly one setting, the admin key. `install.sh` generates it into `/etc/peerly/env`. If you install by hand instead, copy `deploy/env.example` to `/etc/peerly/env` and fill in a long random value.
+
+Your data lives in `/var/lib/peerly`: one small database and one file per save. To make a backup while the server runs:
 
 ```sh
 sudo install -d -o peerly -g peerly /var/backups/peerly
 sudo -u peerly /usr/local/bin/peerly-server -data /var/lib/peerly -backup /var/backups/peerly
 ```
 
-This writes a consistent copy of the database and every save into a dated folder. Restoring is copying that folder back to `/var/lib/peerly` and restarting the service. The server keeps the 20 most recent session saves, 3 mid-session backups and 30 branch saves per world, and removes older ones.
+Copy the dated folder somewhere safe. Restoring is copying it back to `/var/lib/peerly` and restarting the service.
 
-When you upgrade the server binary, the database is migrated on start. A database written by a newer server is refused rather than damaged.
+**Upgrading**: replace the binary and restart the service. The database is upgraded automatically. A database written by a newer server is refused rather than damaged.
 
-**If the group owner disappears** (lost PC, left without handing over), nobody can invite or approve any more. The person with the admin key fixes that from any PC with the command line client:
+**If the owner disappears** (lost PC, left the group without handing over), nobody can invite or approve any more. Whoever has the admin key fixes that from any PC:
 
 ```sh
-peerly-cli admin-groups  -server https://saves.example.com -admin-key KEY
-peerly-cli admin-recover -server https://saves.example.com -admin-key KEY -group GROUP_ID -as yourname
+peerly-cli admin-groups  -server https://your.domain -admin-key KEY
+peerly-cli admin-recover -server https://your.domain -admin-key KEY -group GROUP_ID -as yourname
 ```
 
-That PC becomes the group's owner. Owners can avoid this by handing the group over in **Group and invites**, **Make owner**, before they leave.
-
-## Use the app
-
-Build the three Windows programs with `make windows` (they land in `dist/`).
-
-- `peerly.exe`: the app in its own window (needs the WebView2 runtime, present on Windows 11 and most Windows 10 PCs)
-- `peerly-browser.exe`: the same app in your browser
-- `peerly-cli.exe`: command line version
-
-Windows SmartScreen warns about programs it has not seen before, because the files are not code signed. Choose More info, then Run anyway, or build from source.
-
-1. One person chooses **Create a group**, enters the server address and the admin key. They are the group owner.
-2. The owner presses **Group and invites**, then **Invite a friend**, and sends that friend the text. Each invite code works once and expires after a day.
-3. The friend chooses **Join a group** and pastes the server address and code. Their PC then waits until the owner presses **Approve** next to their name. The owner sees the name they typed and the name of their PC.
-4. Whoever owns the world presses **Add world**, picks the game, and types the world name exactly as the save is named.
-5. On every PC, the first **Host** or **Settings** shows which files in the save folder belong to the world. Only those files are ever uploaded, backed up or replaced. Characters and other worlds are left alone.
-6. Press **Host** to play. Close the game when done and wait until the card says the world is free.
-
-**Sync only** uploads progress made on this PC and downloads the latest save without starting the game.
-
-The group owner is the only one who can invite, approve, remove members and hand the group to someone else (**Make owner**). Do that hand-over before leaving the group.
-
-### Things that go wrong with games, not with peerly
-
-- **Steam Cloud** can put an old save back after peerly replaced it. Turn Steam Cloud off for the game, or for Valheim move the world to local storage first.
-- Some games write the host's identity into the save (Palworld is the known case). Those need the save rewritten when another person hosts, which peerly does not do.
-- A wrong process name means peerly cannot tell that you stopped playing. It keeps waiting and says so; press **Stop hosting** when you are done and the save is still uploaded. The right name is in Task Manager, Details tab, while the game runs.
+Owners avoid this by handing the group over first: **Group and invites**, **Make owner**.
 
 ## What it protects you from
 
-- The save folder is checked before anything happens. Your home folder, Documents, Desktop, AppData roots, drive roots and system folders are refused, and so is any selection above 20,000 files.
-- Replacing files is all or nothing. If the game or a cloud sync tool holds a file open, every file is put back and you are told which file was busy.
-- Files on a PC that peerly has never synced are copied to a local backup folder and uploaded as a branch before they are replaced.
+- Only the files you confirmed are ever uploaded, backed up or replaced.
+- The save folder is checked first. Your home folder, Documents, Desktop, drive roots and system folders are refused, and so is anything with more than 20,000 files.
+- Replacing files is all or nothing. If the game or a cloud sync tool holds a file open, every file is put back and you are told which one was busy.
+- Files on a PC that peerly has never seen are backed up locally and uploaded as a branch before they are replaced.
 - Progress made outside a hosted session is never pushed over the group's world silently. You are asked, and if someone else hosted in between it always becomes a branch.
-- The launch command suggested by whoever added a world is never run on your PC unless you accept it yourself. Only plain `steam://` and Epic launcher links are pre-filled.
-- A save downloaded from the group can only write files that match your own file filter.
-- The browser version accepts requests only from its own page, with a key that changes every run.
-- One PC runs one copy of peerly at a time, and the server refuses to let the same member host the same world from two windows or PCs at once. After a crash, the restarted app takes over automatically about a minute later.
-- Joining and group creation are rate limited per address, so invite codes cannot be guessed.
+- A launch command suggested by whoever added the world never runs on your PC unless you accept it yourself.
+- Joining needs an invite that works once, and the owner's approval. Invite codes cannot be guessed because attempts are limited.
+- One PC runs one copy of peerly, and the server does not let the same person host the same world from two places at once.
 
 ## What it does not protect you from
 
-- A member you approved can download the group's worlds, host, and make any branch current. Approve only people you trust; the owner can remove a member at any time.
-- The member token is stored in plain text in the app's settings folder, like most desktop apps store logins.
-- Mid-session backups copy the save while the game is running. They wait until the files have been quiet for 20 seconds and are discarded if a file changes while being read, but a game can still be caught mid-write. If the latest save is such a backup, the next host is warned and can make an earlier save current from History. They can be turned off per world, per PC.
-- One PC belongs to one group at a time. Leaving a group forgets it on that PC.
+- A member the owner approved can download the worlds, host, and make any branch current. Approve people you trust.
+- The login token is stored in plain text in the app's settings folder, like most desktop apps store logins.
+- Mid-session backups copy the save while the game runs. peerly waits for a quiet moment and discards a file that changes while being read, but a game can still be caught mid-write. If the newest save is such a backup, the next host is warned and can make an earlier save current from History.
+- One PC belongs to one group at a time.
 
 ## Similar tools
 
-- [SaveSync](https://www.savesync.games/) is a polished commercial app that stores saves through Steam Workshop. If you just want to play and do not care about self-hosting, it is the easy answer.
-- [hoard](https://github.com/DevOfPie/hoard) and [dedicated-server-save-sync](https://github.com/Ayerdi/dedicated-server-save-sync) are self-hosted projects with a similar lease idea.
-- [valheim-sync](https://github.com/RajaRakoto/valheim-sync), [palrelay](https://github.com/Lother13501350/palrelay) and [OpenSave](https://github.com/Liquid-co/OpenSave) cover single games or single-player multi-device sync.
+- [SaveSync](https://www.savesync.games/): commercial, stores saves through Steam Workshop, no server needed. The easy answer if you do not want to self-host.
+- [hoard](https://github.com/DevOfPie/hoard) and [dedicated-server-save-sync](https://github.com/Ayerdi/dedicated-server-save-sync): self-hosted projects with a similar lease idea.
+- [valheim-sync](https://github.com/RajaRakoto/valheim-sync), [palrelay](https://github.com/Lother13501350/palrelay), [OpenSave](https://github.com/Liquid-co/OpenSave): one game each, or one player across several devices.
 
-## Development
+## For developers
 
-Go 1.27 or newer. No other build tools; the interface is plain JavaScript embedded in the binary.
+Go 1.27 or newer, nothing else. The interface is plain JavaScript embedded in the binary.
 
 ```sh
 make test        # go vet + unit and integration tests with the race detector
 make e2e         # browser-driven suite, needs python3 with playwright and Google Chrome
-make all         # tests plus every binary into dist/
+make windows     # peerly.exe, peerly-browser.exe, peerly-cli.exe into dist/
+make all         # tests plus every binary
 ```
 
 ```
 proto/          request and response types shared by server and client
-server/         HTTP API, SQLite store (lease, revisions, retention), save files on disk
+server/         HTTP API, SQLite store (lease, revisions, retention, migrations), save files on disk
 client/core/    sync logic: snapshot, transactional restore, host session, game detection
 client/ui/      local web interface and its JSON API
 client/web/     runs the interface in the browser
 client/app/     runs the interface in a Wails window (Windows)
 client/cli/     command line client
-deploy/         systemd unit, Caddyfile, installer
+deploy/         systemd unit, Caddyfile, installer, env.example
 e2e/            browser-driven end to end suite
 ```
+
+Environment variables: the server reads `PEERLY_ADMIN_KEY` (see `deploy/env.example`); the apps read the optional `PEERLY_CONFIG_DIR` to use a different settings folder, which the tests use to run several players on one machine.
 
 Bug reports are most useful with `peerly.log` from the settings folder (`%AppData%\peerly` on Windows, `~/.config/peerly` on Linux).
 
