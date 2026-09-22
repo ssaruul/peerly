@@ -823,3 +823,42 @@ func TestASaveThatShrankByHalfNeverReplacesTheWorld(t *testing.T) {
 		t.Fatalf("a brand new world below the size floor must not trigger the rule: %+v", second)
 	}
 }
+
+func TestKeptSavesSurviveRetentionAndDeletion(t *testing.T) {
+	f := newFixture(t, 2)
+	f.store.KeepPeople = 1
+	f.store.ForkGrace = 0
+	f.store.KeepForks = 1
+	ctx := context.Background()
+	lease, _ := f.store.AcquireLease(ctx, f.members[0], f.world.ID, "s")
+	good := f.commit(t, f.members[0], "", lease.FencingToken)
+	if _, err := f.store.PinRevision(ctx, f.members[1], good.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	parentID := good.ID
+	for range 4 {
+		parentID = f.commit(t, f.members[0], parentID, lease.FencingToken).ID
+	}
+	if _, _, err := f.store.RevisionBlob(ctx, f.members[0], good.ID); err != nil {
+		t.Fatalf("a kept save was removed by retention: %v", err)
+	}
+	fork := f.commit(t, f.members[1], "", 0)
+	if _, err := f.store.PinRevision(ctx, f.members[1], fork.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	f.commit(t, f.members[1], "", 0)
+	f.commit(t, f.members[1], "", 0)
+	if _, _, err := f.store.RevisionBlob(ctx, f.members[0], fork.ID); err != nil {
+		t.Fatalf("a kept branch was removed by retention: %v", err)
+	}
+	if _, err := f.store.DiscardFork(ctx, f.members[1], fork.ID); !errors.Is(err, ErrPinned) {
+		t.Fatalf("deleting a kept branch: %v", err)
+	}
+	if _, err := f.store.PinRevision(ctx, f.members[0], good.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	f.commit(t, f.members[0], parentID, lease.FencingToken)
+	if _, _, err := f.store.RevisionBlob(ctx, f.members[0], good.ID); !errors.Is(err, ErrGone) {
+		t.Fatalf("an unkept save should fall under retention again: %v", err)
+	}
+}

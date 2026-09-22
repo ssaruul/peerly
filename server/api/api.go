@@ -64,6 +64,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /worlds/{id}/join-info", s.auth(s.setJoinInfo))
 	mux.HandleFunc("GET /revisions/{id}/blob", s.auth(s.downloadBlob))
 	mux.HandleFunc("DELETE /revisions/{id}", s.auth(s.discardFork))
+	mux.HandleFunc("PUT /revisions/{id}/pin", s.auth(s.pinRevision))
 	return mux
 }
 
@@ -95,7 +96,7 @@ func writeError(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusServiceUnavailable, proto.ErrorResponse{Error: err.Error()})
 	case errors.Is(err, store.ErrNameTaken):
 		writeJSON(w, http.StatusConflict, proto.ErrorResponse{Error: err.Error()})
-	case errors.Is(err, store.ErrNotFork), errors.Is(err, store.ErrIsHead), errors.Is(err, store.ErrSelf), errors.Is(err, blobs.ErrChecksumMismatch):
+	case errors.Is(err, store.ErrNotFork), errors.Is(err, store.ErrIsHead), errors.Is(err, store.ErrSelf), errors.Is(err, store.ErrPinned), errors.Is(err, blobs.ErrChecksumMismatch):
 		writeJSON(w, http.StatusUnprocessableEntity, proto.ErrorResponse{Error: err.Error()})
 	case errors.As(err, &tooLarge):
 		writeJSON(w, http.StatusRequestEntityTooLarge, proto.ErrorResponse{Error: "save is larger than the server upload limit"})
@@ -525,6 +526,20 @@ func (s *Server) downloadBlob(w http.ResponseWriter, r *http.Request, member pro
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("X-Sha256", revision.Sha256)
 	http.ServeFile(w, r, s.Blobs.Path(blobID))
+}
+
+func (s *Server) pinRevision(w http.ResponseWriter, r *http.Request, member proto.Member) {
+	request := proto.PinRequest{}
+	if !readJSON(w, r, &request) {
+		return
+	}
+	revision, err := s.Store.PinRevision(r.Context(), member, r.PathValue("id"), request.Pinned)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	log.Printf("%q set kept=%v on revision %s", member.DisplayName, request.Pinned, revision.ID)
+	writeJSON(w, http.StatusOK, revision)
 }
 
 func (s *Server) discardFork(w http.ResponseWriter, r *http.Request, member proto.Member) {

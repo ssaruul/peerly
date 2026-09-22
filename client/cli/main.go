@@ -26,6 +26,8 @@ const usage = `peerly-cli <command> [flags]
   pull           -world NAME [-revision ID]
   promote        -world NAME -revision ID
   discard        -revision ID
+  keep           -revision ID     never remove this save automatically
+  unkeep         -revision ID
   delete-world   -world NAME
   invite                          (owner) print a one-use invite code for one friend
   approve        -member ID       (owner) approve a PC that joined with an invite
@@ -235,6 +237,9 @@ func run(command string, args []string) error {
 		return nil
 	case "discard":
 		return client.DiscardFork(ctx, *revisionID)
+	case "keep", "unkeep":
+		_, err := client.PinRevision(ctx, *revisionID, command == "keep")
+		return err
 	case "invite":
 		invite, err := client.CreateInvite(ctx)
 		if err != nil {
@@ -331,6 +336,9 @@ func run(command string, args []string) error {
 			marker := " "
 			if revision.ID == world.HeadRevisionID {
 				marker = "*"
+			}
+			if revision.Pinned {
+				marker += "K"
 			}
 			size := fmt.Sprintf("%8d KB", revision.Size/1024)
 			if revision.PrunedAt != 0 {

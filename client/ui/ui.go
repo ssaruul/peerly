@@ -128,6 +128,7 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("POST /api/worlds/{id}/promote", a.promote)
 	mux.HandleFunc("POST /api/worlds/{id}/pull", a.pull)
 	mux.HandleFunc("DELETE /api/revisions/{id}", a.discard)
+	mux.HandleFunc("PUT /api/revisions/{id}/pin", a.pin)
 	return a.guard(mux)
 }
 
@@ -794,6 +795,19 @@ func (a *App) pull(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"backup_dir": result.BackupDir, "skipped": result.Skipped})
+}
+
+func (a *App) pin(w http.ResponseWriter, r *http.Request) {
+	request := proto.PinRequest{}
+	if !decode(w, r, &request) {
+		return
+	}
+	revision, err := a.client().PinRevision(r.Context(), r.PathValue("id"), request.Pinned)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, revision)
 }
 
 func (a *App) discard(w http.ResponseWriter, r *http.Request) {

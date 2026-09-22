@@ -756,10 +756,13 @@ async function openHistory(view) {
           h("strong", {}, revision.note || "save"), " ",
           isHead ? h("span", { class: "badge free" }, "current") : null,
           isFork ? h("span", { class: "badge fork", title: revision.branch }, "separate branch") : null,
+          revision.pinned ? h("span", { class: "badge mine", title: "This save is never removed automatically" }, "kept") : null,
           recordOnly ? h("span", { class: "badge", title: "Only the record of this session is kept, its file was removed to save space" }, "save no longer kept") : null,
           h("p", { class: "small muted" }, `${revision.author_name}, ${formatTime(revision.created_at)}` + (recordOnly ? "" : `, ${formatSize(revision.size)}`)),
         ),
         h("div", { class: "row" },
+          recordOnly ? null : h("button", { title: revision.pinned ? "Let this save be removed automatically again" : "Never remove this save automatically, for example after a good evening or before a risky game update",
+            onclick: () => act("history", () => api("PUT", `/revisions/${revision.id}/pin`, { pinned: !revision.pinned }), revision.pinned ? "This save can be removed automatically again" : "This save is kept until someone unmarks it") }, revision.pinned ? "Unkeep" : "Keep"),
           isHead || recordOnly ? null : h("button", { onclick: async () => {
             const sure = await ask("Make this save the current world?", [
               `Everyone in the group gets ${revision.author_name}'s save from ${formatTime(revision.created_at)} the next time they host.`,
@@ -790,7 +793,7 @@ async function openHistory(view) {
   });
   showDialog(
     h("div", { class: "row spread" }, h("h2", {}, world.name + " history"), h("button", { onclick: closeDialog }, "Close")),
-    h("p", { class: "small muted" }, "A separate branch appears when someone played without holding the world, for example offline. Nothing is overwritten: the group decides whether to make it current. Every session stays listed for six months; only the latest save of each of the five most recent hosts keeps its file."),
+    h("p", { class: "small muted" }, "A separate branch appears when someone played without holding the world, for example offline. Nothing is overwritten: the group decides whether to make it current. Every session stays listed for six months; only the latest save of each of the five most recent hosts keeps its file, plus any save marked Keep."),
     h("div", { class: "history" }, items.length ? items : h("p", { class: "muted" }, "No saves yet.")),
   );
 }

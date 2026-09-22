@@ -268,6 +268,11 @@ func (c *APIClient) DiscardFork(ctx context.Context, revisionID string) error {
 	return c.call(ctx, http.MethodDelete, "/revisions/"+revisionID, nil, nil)
 }
 
+func (c *APIClient) PinRevision(ctx context.Context, revisionID string, pinned bool) (proto.Revision, error) {
+	revision := proto.Revision{}
+	return revision, c.call(ctx, http.MethodPut, "/revisions/"+revisionID+"/pin", proto.PinRequest{Pinned: pinned}, &revision)
+}
+
 func (c *APIClient) DeleteWorld(ctx context.Context, worldID string) error {
 	return c.call(ctx, http.MethodDelete, "/worlds/"+worldID, nil, nil)
 }

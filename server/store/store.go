@@ -30,6 +30,7 @@ var (
 	ErrPending   = errors.New("this PC is waiting for the group owner to approve it")
 	ErrBadInvite = errors.New("this invite code is unknown, already used or older than a day. Ask the group owner for a new one")
 	ErrGone      = errors.New("this save is no longer kept on the server, only its record in History")
+	ErrPinned    = errors.New("this save is marked as kept, unmark it first")
 )
 
 const (
@@ -68,7 +69,7 @@ const shrinkFloor = 1 << 20
 
 const ShrunkWarning = "this save is less than half the size of the group's current world, so it was kept as a separate branch instead of replacing it. A world that suddenly shrinks usually means the game started a new world under the old name or could not load the old one. If it really is the newer world, make it current from History"
 
-const schemaVersion = 3
+const schemaVersion = 4
 
 const schema = `
 CREATE TABLE IF NOT EXISTS player_groups (
@@ -123,7 +124,8 @@ CREATE TABLE IF NOT EXISTS revisions (
 	created_at INTEGER NOT NULL,
 	note TEXT NOT NULL DEFAULT '',
 	fencing_token INTEGER NOT NULL DEFAULT 0,
-	pruned_at INTEGER NOT NULL DEFAULT 0
+	pruned_at INTEGER NOT NULL DEFAULT 0,
+	pinned INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS revisions_world ON revisions(world_id, created_at);
 CREATE INDEX IF NOT EXISTS revisions_blob ON revisions(blob_id);
@@ -168,6 +170,9 @@ var migrations = map[int]func(ctx context.Context, tx *sql.Tx) error{
 	},
 	2: func(ctx context.Context, tx *sql.Tx) error {
 		return addColumn(ctx, tx, column{"revisions", "pruned_at", "INTEGER NOT NULL DEFAULT 0"})
+	},
+	3: func(ctx context.Context, tx *sql.Tx) error {
+		return addColumn(ctx, tx, column{"revisions", "pinned", "INTEGER NOT NULL DEFAULT 0"})
 	},
 }
 
@@ -650,12 +655,12 @@ func (s *Store) World(ctx context.Context, member proto.Member, worldID string) 
 	return getWorld(ctx, s.db, worldID, member.GroupID)
 }
 
-const revisionColumns = `r.id, r.world_id, r.parent_id, r.branch, r.sha256, r.size, r.author_id, m.display_name, r.created_at, r.note, r.pruned_at`
+const revisionColumns = `r.id, r.world_id, r.parent_id, r.branch, r.sha256, r.size, r.author_id, m.display_name, r.created_at, r.note, r.pruned_at, r.pinned`
 
 func scanRevision(row interface{ Scan(...any) error }) (proto.Revision, error) {
 	revision := proto.Revision{}
 	err := row.Scan(&revision.ID, &revision.WorldID, &revision.ParentID, &revision.Branch, &revision.Sha256,
-		&revision.Size, &revision.AuthorID, &revision.AuthorName, &revision.CreatedAt, &revision.Note, &revision.PrunedAt)
+		&revision.Size, &revision.AuthorID, &revision.AuthorName, &revision.CreatedAt, &revision.Note, &revision.PrunedAt, &revision.Pinned)
 	if errors.Is(err, sql.ErrNoRows) {
 		return revision, ErrNotFound
 	}
@@ -903,25 +908,25 @@ func (s *Store) pruneRevisions(ctx context.Context, tx *sql.Tx, keepRecord bool,
 
 func (s *Store) prune(ctx context.Context, tx *sql.Tx, worldID string, headID string) ([]string, error) {
 	orphanedMain, err := s.pruneRevisions(ctx, tx, true, `WITH sessions AS (
-			SELECT id, blob_id, author_id,
+			SELECT id, blob_id, author_id, pinned,
 				ROW_NUMBER() OVER (PARTITION BY author_id ORDER BY created_at DESC, rowid DESC) AS per_person
 			FROM revisions WHERE world_id = ? AND branch = ? AND note != ? AND blob_id != ''
 		), people AS (
 			SELECT author_id FROM revisions WHERE world_id = ? AND branch = ? AND note != ? AND blob_id != ''
 			GROUP BY author_id ORDER BY MAX(created_at) DESC LIMIT ?
 		)
-		SELECT id, blob_id FROM sessions WHERE id != ? AND (per_person > 1 OR author_id NOT IN (SELECT author_id FROM people))`,
+		SELECT id, blob_id FROM sessions WHERE id != ? AND pinned = 0 AND (per_person > 1 OR author_id NOT IN (SELECT author_id FROM people))`,
 		worldID, proto.MainBranch, CheckpointNote, worldID, proto.MainBranch, CheckpointNote, s.KeepPeople, headID)
 	if err != nil {
 		return nil, err
 	}
-	orphanedCheckpoints, err := s.pruneRevisions(ctx, tx, false, `SELECT id, blob_id FROM revisions WHERE world_id = ? AND branch = ? AND id != ? AND note = ? AND blob_id != ''
+	orphanedCheckpoints, err := s.pruneRevisions(ctx, tx, false, `SELECT id, blob_id FROM revisions WHERE world_id = ? AND branch = ? AND id != ? AND note = ? AND blob_id != '' AND pinned = 0
 		ORDER BY created_at DESC, rowid DESC LIMIT -1 OFFSET ?`, worldID, proto.MainBranch, headID, CheckpointNote, s.KeepCheckpoints)
 	if err != nil {
 		return nil, err
 	}
 	orphanedMain = append(orphanedMain, orphanedCheckpoints...)
-	orphanedForks, err := s.pruneRevisions(ctx, tx, true, `SELECT id, blob_id FROM revisions WHERE world_id = ? AND branch != ? AND created_at <= ? AND blob_id != ''
+	orphanedForks, err := s.pruneRevisions(ctx, tx, true, `SELECT id, blob_id FROM revisions WHERE world_id = ? AND branch != ? AND created_at <= ? AND blob_id != '' AND pinned = 0
 		ORDER BY created_at DESC, rowid DESC LIMIT -1 OFFSET ?`, worldID, proto.MainBranch, s.nowMillis()-s.ForkGrace.Milliseconds(), s.KeepForks)
 	if err != nil {
 		return nil, err
@@ -1142,6 +1147,29 @@ func (s *Store) RevisionBlob(ctx context.Context, member proto.Member, revisionI
 	return revision, blobID, err
 }
 
+func (s *Store) PinRevision(ctx context.Context, member proto.Member, revisionID string, pinned bool) (proto.Revision, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return proto.Revision{}, err
+	}
+	defer tx.Rollback()
+	revision, err := getRevision(ctx, tx, revisionID)
+	if err != nil {
+		return proto.Revision{}, err
+	}
+	if _, err := getWorld(ctx, tx, revision.WorldID, member.GroupID); err != nil {
+		return proto.Revision{}, err
+	}
+	if revision.PrunedAt != 0 {
+		return proto.Revision{}, ErrGone
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE revisions SET pinned = ? WHERE id = ?`, pinned, revisionID); err != nil {
+		return proto.Revision{}, err
+	}
+	revision.Pinned = pinned
+	return revision, tx.Commit()
+}
+
 func (s *Store) DiscardFork(ctx context.Context, member proto.Member, revisionID string) (string, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1157,6 +1185,9 @@ func (s *Store) DiscardFork(ctx context.Context, member proto.Member, revisionID
 	}
 	if revision.Branch == proto.MainBranch {
 		return "", ErrNotFork
+	}
+	if revision.Pinned {
+		return "", ErrPinned
 	}
 	group, err := getGroup(ctx, tx, member.GroupID)
 	if err != nil {
