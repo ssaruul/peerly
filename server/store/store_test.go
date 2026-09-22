@@ -5,7 +5,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math/rand"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -860,5 +862,182 @@ func TestKeptSavesSurviveRetentionAndDeletion(t *testing.T) {
 	f.commit(t, f.members[0], parentID, lease.FencingToken)
 	if _, _, err := f.store.RevisionBlob(ctx, f.members[0], good.ID); !errors.Is(err, ErrGone) {
 		t.Fatalf("an unkept save should fall under retention again: %v", err)
+	}
+}
+
+type plannedSession struct {
+	member proto.Member
+	at     time.Time
+}
+
+func sqliteWeek(at time.Time) string {
+	at = at.UTC()
+	yday := at.YearDay() - 1
+	weekday := int(at.Weekday())
+	return fmt.Sprintf("%d-%02d", at.Year(), (yday+7-(weekday+6)%7)/7)
+}
+
+func referenceKept(sessions []proto.Revision, headID string, keepPeople int, keepDaily int, keepWeekly int) map[string]bool {
+	newestPer := func(key func(proto.Revision) string, limit int) map[string]bool {
+		newest := map[string]proto.Revision{}
+		for _, session := range sessions {
+			k := key(session)
+			current, seen := newest[k]
+			if !seen || session.CreatedAt > current.CreatedAt {
+				newest[k] = session
+			}
+		}
+		keys := []string{}
+		for k := range newest {
+			keys = append(keys, k)
+		}
+		sort.Slice(keys, func(i, j int) bool { return newest[keys[i]].CreatedAt > newest[keys[j]].CreatedAt })
+		kept := map[string]bool{}
+		for index, k := range keys {
+			if index >= limit {
+				break
+			}
+			kept[newest[k].ID] = true
+		}
+		return kept
+	}
+	kept := map[string]bool{headID: true}
+	for id := range newestPer(func(r proto.Revision) string { return r.AuthorID }, keepPeople) {
+		kept[id] = true
+	}
+	for id := range newestPer(func(r proto.Revision) string { return time.UnixMilli(r.CreatedAt).UTC().Format("2006-01-02") }, keepDaily) {
+		kept[id] = true
+	}
+	for id := range newestPer(func(r proto.Revision) string { return sqliteWeek(time.UnixMilli(r.CreatedAt)) }, keepWeekly) {
+		kept[id] = true
+	}
+	return kept
+}
+
+func runSchedule(t *testing.T, f *fixture, schedule []plannedSession) []proto.Revision {
+	t.Helper()
+	ctx := context.Background()
+	parentID := f.head(t)
+	created := []proto.Revision{}
+	for _, planned := range schedule {
+		f.clock = planned.at
+		lease, err := f.store.AcquireLease(ctx, planned.member, f.world.ID, planned.member.DisplayName)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.shaCounter++
+		revision, _, err := f.store.Commit(ctx, planned.member, CommitInput{
+			WorldID: f.world.ID, ParentID: parentID, FencingToken: lease.FencingToken, BlobID: NewID(),
+			Sha256: fmt.Sprintf("sha-%d", f.shaCounter), Size: 5 << 20, Note: "session end",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if revision.Branch != proto.MainBranch {
+			t.Fatalf("session landed on %s", revision.Branch)
+		}
+		f.store.ReleaseLease(ctx, planned.member, f.world.ID, lease.FencingToken)
+		parentID = revision.ID
+		created = append(created, revision)
+	}
+	return created
+}
+
+func filesKept(t *testing.T, f *fixture) map[string]bool {
+	t.Helper()
+	revisions, err := f.store.ListRevisions(context.Background(), f.members[0], f.world.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kept := map[string]bool{}
+	for _, revision := range revisions {
+		if revision.PrunedAt == 0 && revision.Branch == proto.MainBranch {
+			kept[revision.ID] = true
+		}
+	}
+	return kept
+}
+
+func TestAgeSpacedRetentionLadder(t *testing.T) {
+	f := newFixture(t, 4)
+	f.store.KeepPeople, f.store.KeepDaily, f.store.KeepWeekly = 5, 3, 2
+	a, b, c, d := f.members[0], f.members[1], f.members[2], f.members[3]
+	day := func(offset int, hour int) time.Time {
+		return time.Date(2026, 7, 4, hour, 0, 0, 0, time.UTC).AddDate(0, 0, offset)
+	}
+	schedule := []plannedSession{
+		{b, day(-14, 20)},
+		{c, day(-11, 20)}, {a, day(-9, 20)}, {d, day(-7, 20)},
+		{c, day(-4, 20)}, {a, day(-2, 20)}, {d, day(0, 17)}, {d, day(0, 20)},
+	}
+	created := runSchedule(t, f, schedule)
+	kept := filesKept(t, f)
+	want := map[int]string{0: "b two weeks ago", 3: "d last saturday (last week's newest)", 4: "c tuesday", 5: "a thursday", 7: "d saturday 20:00 (head)"}
+	for index, revision := range created {
+		_, shouldSurvive := want[index]
+		if kept[revision.ID] != shouldSurvive {
+			t.Errorf("session %d (%s at %s): kept=%v want %v", index, schedule[index].member.DisplayName, schedule[index].at.Format("Mon Jan 2 15:04"), kept[revision.ID], shouldSurvive)
+		}
+	}
+	if len(kept) != len(want) {
+		t.Fatalf("%d files kept, want %d", len(kept), len(want))
+	}
+	nextWeek := runSchedule(t, f, []plannedSession{{c, day(3, 20)}, {a, day(5, 20)}, {d, day(7, 20)}})
+	kept = filesKept(t, f)
+	for _, gone := range []int{3, 4, 5} {
+		if kept[created[gone].ID] {
+			t.Errorf("after another week, session %d should have lost its reasons", gone)
+		}
+	}
+	for _, stay := range []int{0, 7} {
+		if !kept[created[stay].ID] {
+			t.Errorf("session %d must still be kept (b's latest / this week's newest)", stay)
+		}
+	}
+	for _, revision := range nextWeek {
+		if !kept[revision.ID] {
+			t.Errorf("new session %s not kept", revision.ID)
+		}
+	}
+}
+
+func TestOnePersonHostingEveryDayCostsOnlyTheLadder(t *testing.T) {
+	f := newFixture(t, 2)
+	f.store.KeepPeople, f.store.KeepDaily, f.store.KeepWeekly = 5, 3, 2
+	a, d := f.members[0], f.members[1]
+	start := time.Date(2026, 8, 3, 20, 0, 0, 0, time.UTC)
+	schedule := []plannedSession{{a, start.AddDate(0, 0, -20)}}
+	for offset := 0; offset < 21; offset++ {
+		schedule = append(schedule, plannedSession{d, start.AddDate(0, 0, offset)}, plannedSession{d, start.AddDate(0, 0, offset).Add(2 * time.Hour)})
+	}
+	runSchedule(t, f, schedule)
+	kept := filesKept(t, f)
+	if len(kept) > 1+3+2 || len(kept) < 4 {
+		t.Fatalf("21 days of two sessions a day kept %d files, want between 4 and 6", len(kept))
+	}
+}
+
+func TestIncrementalRetentionMatchesFullEvaluation(t *testing.T) {
+	random := rand.New(rand.NewSource(20260922))
+	for round := 0; round < 25; round++ {
+		f := newFixture(t, 6)
+		f.store.KeepPeople, f.store.KeepDaily, f.store.KeepWeekly = 1+random.Intn(4), 1+random.Intn(4), 1+random.Intn(3)
+		start := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC).AddDate(0, 0, random.Intn(200))
+		schedule := []plannedSession{}
+		moment := start
+		for len(schedule) < 15+random.Intn(25) {
+			moment = moment.Add(time.Duration(1+random.Intn(40)) * time.Hour)
+			schedule = append(schedule, plannedSession{f.members[random.Intn(len(f.members))], moment})
+		}
+		created := runSchedule(t, f, schedule)
+		got := filesKept(t, f)
+		want := referenceKept(created, created[len(created)-1].ID, f.store.KeepPeople, f.store.KeepDaily, f.store.KeepWeekly)
+		for _, revision := range created {
+			if got[revision.ID] != want[revision.ID] {
+				t.Fatalf("round %d (people=%d daily=%d weekly=%d): session by %s at %s kept=%v but a clean evaluation says %v",
+					round, f.store.KeepPeople, f.store.KeepDaily, f.store.KeepWeekly, revision.AuthorName, time.UnixMilli(revision.CreatedAt).UTC().Format("Mon 2006-01-02 15:04"), got[revision.ID], want[revision.ID])
+			}
+		}
+		f.store.Close()
 	}
 }

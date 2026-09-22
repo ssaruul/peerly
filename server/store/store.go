@@ -57,6 +57,8 @@ type Store struct {
 	Now             func() time.Time
 	LeaseTTL        time.Duration
 	KeepPeople      int
+	KeepDaily       int
+	KeepWeekly      int
 	KeepCheckpoints int
 	KeepForks       int
 	ForkGrace       time.Duration
@@ -249,7 +251,7 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
-	return &Store{db: db, Now: time.Now, LeaseTTL: 3 * time.Minute, KeepPeople: 5, KeepCheckpoints: 3, KeepForks: 30, ForkGrace: 30 * 24 * time.Hour, KeepRecords: 180 * 24 * time.Hour}, nil
+	return &Store{db: db, Now: time.Now, LeaseTTL: 3 * time.Minute, KeepPeople: 5, KeepDaily: 3, KeepWeekly: 2, KeepCheckpoints: 3, KeepForks: 30, ForkGrace: 30 * 24 * time.Hour, KeepRecords: 180 * 24 * time.Hour}, nil
 }
 
 func (s *Store) Close() error {
@@ -908,15 +910,25 @@ func (s *Store) pruneRevisions(ctx context.Context, tx *sql.Tx, keepRecord bool,
 
 func (s *Store) prune(ctx context.Context, tx *sql.Tx, worldID string, headID string) ([]string, error) {
 	orphanedMain, err := s.pruneRevisions(ctx, tx, true, `WITH sessions AS (
-			SELECT id, blob_id, author_id, pinned,
-				ROW_NUMBER() OVER (PARTITION BY author_id ORDER BY created_at DESC, rowid DESC) AS per_person
+			SELECT id, blob_id, author_id, pinned, created_at,
+				strftime('%Y-%m-%d', created_at / 1000, 'unixepoch') AS day,
+				strftime('%Y-%W', created_at / 1000, 'unixepoch') AS week,
+				ROW_NUMBER() OVER (PARTITION BY author_id ORDER BY created_at DESC, rowid DESC) AS per_person,
+				ROW_NUMBER() OVER (PARTITION BY strftime('%Y-%m-%d', created_at / 1000, 'unixepoch') ORDER BY created_at DESC, rowid DESC) AS per_day,
+				ROW_NUMBER() OVER (PARTITION BY strftime('%Y-%W', created_at / 1000, 'unixepoch') ORDER BY created_at DESC, rowid DESC) AS per_week
 			FROM revisions WHERE world_id = ? AND branch = ? AND note != ? AND blob_id != ''
 		), people AS (
-			SELECT author_id FROM revisions WHERE world_id = ? AND branch = ? AND note != ? AND blob_id != ''
-			GROUP BY author_id ORDER BY MAX(created_at) DESC LIMIT ?
+			SELECT author_id FROM sessions GROUP BY author_id ORDER BY MAX(created_at) DESC LIMIT ?
+		), days AS (
+			SELECT day FROM sessions GROUP BY day ORDER BY MAX(created_at) DESC LIMIT ?
+		), weeks AS (
+			SELECT week FROM sessions GROUP BY week ORDER BY MAX(created_at) DESC LIMIT ?
 		)
-		SELECT id, blob_id FROM sessions WHERE id != ? AND pinned = 0 AND (per_person > 1 OR author_id NOT IN (SELECT author_id FROM people))`,
-		worldID, proto.MainBranch, CheckpointNote, worldID, proto.MainBranch, CheckpointNote, s.KeepPeople, headID)
+		SELECT id, blob_id FROM sessions WHERE id != ? AND pinned = 0
+			AND NOT (per_person = 1 AND author_id IN (SELECT author_id FROM people))
+			AND NOT (per_day = 1 AND day IN (SELECT day FROM days))
+			AND NOT (per_week = 1 AND week IN (SELECT week FROM weeks))`,
+		worldID, proto.MainBranch, CheckpointNote, s.KeepPeople, s.KeepDaily, s.KeepWeekly, headID)
 	if err != nil {
 		return nil, err
 	}

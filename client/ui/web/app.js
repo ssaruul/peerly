@@ -793,7 +793,7 @@ async function openHistory(view) {
   });
   showDialog(
     h("div", { class: "row spread" }, h("h2", {}, world.name + " history"), h("button", { onclick: closeDialog }, "Close")),
-    h("p", { class: "small muted" }, "A separate branch appears when someone played without holding the world, for example offline. Nothing is overwritten: the group decides whether to make it current. Every session stays listed for six months; only the latest save of each of the five most recent hosts keeps its file, plus any save marked Keep."),
+    h("p", { class: "small muted" }, "A separate branch appears when someone played without holding the world, for example offline. Nothing is overwritten: the group decides whether to make it current. Every session stays listed for six months. Files are kept for the latest save of each of the five most recent hosts, the last save of each of the last three days and of the last two weeks with sessions, and any save marked Keep."),
     h("div", { class: "history" }, items.length ? items : h("p", { class: "muted" }, "No saves yet.")),
   );
 }
