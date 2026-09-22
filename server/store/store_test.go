@@ -715,3 +715,32 @@ func TestRemovingAMemberVoidsTheirOpenInvites(t *testing.T) {
 		t.Fatalf("a removed member's invite still admits people: %v", err)
 	}
 }
+
+func TestTheLastSaveByAnotherMemberSurvivesAHostingSpree(t *testing.T) {
+	f := newFixture(t, 2)
+	f.store.KeepMain = 3
+	ctx := context.Background()
+	a, d := f.members[0], f.members[1]
+	leaseA, _ := f.store.AcquireLease(ctx, a, f.world.ID, "a")
+	good := f.commit(t, a, "", leaseA.FencingToken)
+	f.store.ReleaseLease(ctx, a, f.world.ID, leaseA.FencingToken)
+	parentID := good.ID
+	for range 10 {
+		leaseD, _ := f.store.AcquireLease(ctx, d, f.world.ID, "d")
+		parentID = f.commit(t, d, parentID, leaseD.FencingToken).ID
+		f.store.ReleaseLease(ctx, d, f.world.ID, leaseD.FencingToken)
+	}
+	if _, _, err := f.store.RevisionBlob(ctx, a, good.ID); err != nil {
+		t.Fatalf("the last save before d's spree was pruned: %v", err)
+	}
+	revisions, _ := f.store.ListRevisions(ctx, a, f.world.ID)
+	if len(revisions) != f.store.KeepMain+1 {
+		t.Fatalf("%d revisions kept, want %d", len(revisions), f.store.KeepMain+1)
+	}
+	leaseA, _ = f.store.AcquireLease(ctx, a, f.world.ID, "a")
+	f.commit(t, a, parentID, leaseA.FencingToken)
+	f.store.ReleaseLease(ctx, a, f.world.ID, leaseA.FencingToken)
+	if _, _, err := f.store.RevisionBlob(ctx, a, good.ID); err == nil {
+		t.Fatal("once a hosts again the old protected save should be subject to normal retention")
+	}
+}

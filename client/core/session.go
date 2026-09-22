@@ -346,11 +346,25 @@ func (s *Session) prepareLocal(ctx context.Context) error {
 		s.emit(EventInfo, "this PC already has the latest save")
 		return s.markUploadedState()
 	}
-	contentOnServer := synced && currentHash == local.LastManifestHash
+	lastStillOnServer := false
+	if synced {
+		revisions, err := s.Client.Revisions(ctx, s.WorldID)
+		if err != nil {
+			return err
+		}
+		for _, revision := range revisions {
+			if revision.ID == local.LastRevisionID {
+				lastStillOnServer = true
+			}
+		}
+	}
+	contentOnServer := synced && lastStillOnServer && currentHash == local.LastManifestHash
 	if fileCount > 0 && !contentOnServer {
 		note, asBranch := "files found on this PC before its first sync", true
 		s.parentID = ""
-		if synced {
+		if synced && !lastStillOnServer {
+			note = "the copy this PC had, which the server no longer has"
+		} else if synced {
 			note = "progress made on this PC since the last sync"
 			s.parentID = local.LastRevisionID
 			asBranch = s.LocalChanges != LocalChangesLatest
@@ -360,7 +374,14 @@ func (s *Session) prepareLocal(ctx context.Context) error {
 			return err
 		}
 		if revision != nil && revision.Branch == proto.MainBranch {
-			return nil
+			status, err := s.Client.WorldStatus(ctx, s.WorldID)
+			if err != nil {
+				return err
+			}
+			if status.World.HeadRevisionID == revision.ID {
+				return nil
+			}
+			head = status.World.HeadRevisionID
 		}
 		contentOnServer = revision != nil
 		s.parentID = head

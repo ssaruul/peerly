@@ -888,8 +888,20 @@ func (s *Store) pruneRevisions(ctx context.Context, tx *sql.Tx, query string, ar
 }
 
 func (s *Store) prune(ctx context.Context, tx *sql.Tx, worldID string, headID string) ([]string, error) {
-	orphanedMain, err := s.pruneRevisions(ctx, tx, `SELECT id, blob_id FROM revisions WHERE world_id = ? AND branch = ? AND id != ? AND note != ?
-		ORDER BY created_at DESC, rowid DESC LIMIT -1 OFFSET ?`, worldID, proto.MainBranch, headID, CheckpointNote, max(s.KeepMain-1, 0))
+	keepID := headID
+	var headAuthor string
+	if err := tx.QueryRowContext(ctx, `SELECT author_id FROM revisions WHERE id = ?`, headID).Scan(&headAuthor); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
+	if headAuthor != "" {
+		err := tx.QueryRowContext(ctx, `SELECT id FROM revisions WHERE world_id = ? AND branch = ? AND note != ? AND author_id != ?
+			ORDER BY created_at DESC, rowid DESC LIMIT 1`, worldID, proto.MainBranch, CheckpointNote, headAuthor).Scan(&keepID)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return nil, err
+		}
+	}
+	orphanedMain, err := s.pruneRevisions(ctx, tx, `SELECT id, blob_id FROM revisions WHERE world_id = ? AND branch = ? AND id != ? AND id != ? AND note != ?
+		ORDER BY created_at DESC, rowid DESC LIMIT -1 OFFSET ?`, worldID, proto.MainBranch, headID, keepID, CheckpointNote, max(s.KeepMain-1, 0))
 	if err != nil {
 		return nil, err
 	}

@@ -5,6 +5,7 @@ package core
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -626,4 +627,68 @@ func readFileContent(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return string(raw)
+}
+
+func TestPrunedLastSyncIsReuploadedAsABranch(t *testing.T) {
+	g := newGroup(t, "a", "c", "d")
+	playerA, playerC, playerD := g.players[0], g.players[1], g.players[2]
+	g.server.store.KeepMain = 2
+	ctx := context.Background()
+	playerA.write(t, "world.sav", "old version world;")
+	playerA.configure(t, g.world.ID, "true")
+	if err := playerA.session(g.world.ID).Host(ctx); err != nil {
+		t.Fatal(err)
+	}
+	playerC.configure(t, g.world.ID, playerC.appendCommand("c;", "0", "0"))
+	if err := playerC.session(g.world.ID).Host(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for index := range 3 {
+		playerD.configure(t, g.world.ID, playerD.appendCommand(fmt.Sprintf("d%d;", index), "0", "0"))
+		if err := playerD.session(g.world.ID).Host(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	revisions, _ := playerA.client.Revisions(ctx, g.world.ID)
+	for _, revision := range revisions {
+		if revision.ID == playerA.config.World(g.world.ID).LastRevisionID {
+			t.Fatal("test setup: a's save was not pruned")
+		}
+	}
+	playerA.configure(t, g.world.ID, "true")
+	if err := playerA.session(g.world.ID).Host(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !playerA.sawEvent(EventWarning, "the copy this PC had") || g.forkCount(t) != 1 {
+		t.Fatalf("a's pruned world was not re-uploaded as a branch (forks=%d)", g.forkCount(t))
+	}
+	if got := playerA.read(t, "world.sav"); got != "old version world;c;d0;d1;d2;" {
+		t.Fatalf("a did not receive the current world afterwards: %q", got)
+	}
+}
+
+func TestMatchingAnOldSaveStillDownloadsTheCurrentWorld(t *testing.T) {
+	g := newGroup(t, "a", "d")
+	playerA, playerD := g.players[0], g.players[1]
+	ctx := context.Background()
+	playerA.write(t, "world.sav", "start;")
+	playerA.configure(t, g.world.ID, "true")
+	if err := playerA.session(g.world.ID).Host(ctx); err != nil {
+		t.Fatal(err)
+	}
+	playerD.configure(t, g.world.ID, playerD.appendCommand("d;", "0", "0"))
+	if err := playerD.session(g.world.ID).Host(ctx); err != nil {
+		t.Fatal(err)
+	}
+	playerA.config.UpdateWorld(g.world.ID, func(settings *WorldSettings) { settings.LastRevisionID = "forgotten" })
+	playerA.configure(t, g.world.ID, "true")
+	if err := playerA.session(g.world.ID).Host(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := playerA.read(t, "world.sav"); got != "start;d;" {
+		t.Fatalf("a kept playing an old world that merely matched an old save on the server: %q", got)
+	}
+	if g.forkCount(t) != 0 {
+		t.Fatalf("an upload identical to an existing save made %d branches", g.forkCount(t))
+	}
 }
