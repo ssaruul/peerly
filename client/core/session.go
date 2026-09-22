@@ -555,12 +555,12 @@ func (s *Session) uploadCurrent(ctx context.Context, note string, expectedFinger
 		plural = ""
 	}
 	kind, message := EventUploaded, fmt.Sprintf("%s uploaded (%d file%s)", note, packed.FileCount, plural)
-	if revision.Branch != proto.MainBranch {
+	if revision.Warning != "" {
+		kind = EventWarning
+		message = fmt.Sprintf("%s: %s", note, revision.Warning)
+	} else if revision.Branch != proto.MainBranch {
 		kind = EventWarning
 		message = fmt.Sprintf("%s: saved as the separate branch %s, not as the group's current world. Nothing is lost, the group can make it current from History", note, revision.Branch)
-	} else if s.previousSize > 1<<20 && revision.Size*2 < s.previousSize {
-		kind = EventWarning
-		message = fmt.Sprintf("%s uploaded, but it is less than half the size of the previous save. If the wrong world was saved, make the earlier save current from History", note)
 	}
 	if revision.Branch == proto.MainBranch {
 		s.previousSize = revision.Size

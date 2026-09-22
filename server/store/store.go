@@ -64,6 +64,10 @@ type Store struct {
 
 const CheckpointNote = "checkpoint"
 
+const shrinkFloor = 1 << 20
+
+const ShrunkWarning = "this save is less than half the size of the group's current world, so it was kept as a separate branch instead of replacing it. A world that suddenly shrinks usually means the game started a new world under the old name or could not load the old one. If it really is the newer world, make it current from History"
+
 const schemaVersion = 3
 
 const schema = `
@@ -976,6 +980,17 @@ func (s *Store) Commit(ctx context.Context, member proto.Member, input CommitInp
 		}
 	}
 	branch := proto.MainBranch
+	warning := ""
+	if holdsLease && parentID == world.HeadRevisionID && world.HeadRevisionID != "" {
+		var headSize int64
+		if err := tx.QueryRowContext(ctx, `SELECT size FROM revisions WHERE id = ?`, world.HeadRevisionID).Scan(&headSize); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return proto.Revision{}, nil, err
+		}
+		if headSize > shrinkFloor && input.Size*2 < headSize {
+			branch = forkBranchName(member.DisplayName, s.Now())
+			warning = ShrunkWarning
+		}
+	}
 	if !holdsLease || parentID != world.HeadRevisionID {
 		branch = forkBranchName(member.DisplayName, s.Now())
 		if input.ParentID != "" {
@@ -1015,6 +1030,7 @@ func (s *Store) Commit(ctx context.Context, member proto.Member, input CommitInp
 	if err != nil {
 		return proto.Revision{}, nil, err
 	}
+	revision.Warning = warning
 	return revision, orphanedBlobs, tx.Commit()
 }
 

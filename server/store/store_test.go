@@ -791,3 +791,35 @@ func TestTheLatestSessionOfEachRecentPersonIsKept(t *testing.T) {
 		t.Fatalf("c hosting again must replace c's old session and keep d's: %v", kept)
 	}
 }
+
+func TestASaveThatShrankByHalfNeverReplacesTheWorld(t *testing.T) {
+	f := newFixture(t, 1)
+	ctx := context.Background()
+	lease, _ := f.store.AcquireLease(ctx, f.members[0], f.world.ID, "s")
+	big, _, err := f.store.Commit(ctx, f.members[0], CommitInput{WorldID: f.world.ID, FencingToken: lease.FencingToken, BlobID: NewID(), Sha256: "big", Size: 300 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.clock = f.clock.Add(time.Second)
+	blank, _, err := f.store.Commit(ctx, f.members[0], CommitInput{WorldID: f.world.ID, ParentID: big.ID, FencingToken: lease.FencingToken, BlobID: NewID(), Sha256: "blank", Size: 2 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if blank.Branch == proto.MainBranch || blank.Warning == "" || f.head(t) != big.ID {
+		t.Fatalf("a collapsed save replaced the world: branch=%s warning=%q head=%s", blank.Branch, blank.Warning, f.head(t))
+	}
+	f.clock = f.clock.Add(time.Second)
+	grown, _, err := f.store.Commit(ctx, f.members[0], CommitInput{WorldID: f.world.ID, ParentID: big.ID, FencingToken: lease.FencingToken, BlobID: NewID(), Sha256: "grown", Size: 200 << 20})
+	if err != nil || grown.Branch != proto.MainBranch || grown.Warning != "" || f.head(t) != grown.ID {
+		t.Fatalf("a normal save was refused: %+v err %v", grown, err)
+	}
+
+	tiny := newFixture(t, 1)
+	tinyLease, _ := tiny.store.AcquireLease(ctx, tiny.members[0], tiny.world.ID, "s")
+	first, _, _ := tiny.store.Commit(ctx, tiny.members[0], CommitInput{WorldID: tiny.world.ID, FencingToken: tinyLease.FencingToken, BlobID: NewID(), Sha256: "t1", Size: 800 << 10})
+	tiny.clock = tiny.clock.Add(time.Second)
+	second, _, err := tiny.store.Commit(ctx, tiny.members[0], CommitInput{WorldID: tiny.world.ID, ParentID: first.ID, FencingToken: tinyLease.FencingToken, BlobID: NewID(), Sha256: "t2", Size: 100 << 10})
+	if err != nil || second.Branch != proto.MainBranch {
+		t.Fatalf("a brand new world below the size floor must not trigger the rule: %+v", second)
+	}
+}

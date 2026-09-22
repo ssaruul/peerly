@@ -28,7 +28,7 @@ Think of the world as a library book. The server holds the book, and there is on
 4. Games write the world to disk only when they save (their own autosave, a manual save, or closing). Whenever the game has saved, and the files have then stayed unchanged for 20 seconds so the game is not caught mid-write, peerly uploads that save as a mid-session backup, at most once every 15 minutes (you can change or disable this). What happens in the game between saves is only in memory and cannot be backed up by anything.
 5. When you close the game, the save is uploaded and the lease is released. The next host gets exactly what you left.
 
-**What if something goes wrong?** Nothing is ever overwritten silently. If someone played a version of the world that is not the current one, for example because they played offline or their connection dropped and a friend took over, that version is kept as a **separate branch**. The group opens **History** and decides which version should be the current world. Older versions stay in History too, so a bad decision can be undone.
+**What if something goes wrong?** Nothing is ever overwritten silently. If someone played a version of the world that is not the current one, for example because they played offline or their connection dropped and a friend took over, that version is kept as a **separate branch**. The same happens to a save that is less than half the size of the current world, because a world that suddenly shrinks usually means the game started a fresh world under the old name or could not load the old one. The group opens **History** and decides which version should be the current world. Older versions stay in History too, so a bad decision can be undone.
 
 ## For players: setting up the app
 

@@ -53,6 +53,7 @@ type Revision struct {
 	CreatedAt  int64  `json:"created_at"`
 	Note       string `json:"note"`
 	PrunedAt   int64  `json:"pruned_at,omitempty"`
+	Warning    string `json:"warning,omitempty"`
 }
 
 type Lease struct {
