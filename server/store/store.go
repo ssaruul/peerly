@@ -478,6 +478,11 @@ func (s *Store) Me(ctx context.Context, member proto.Member) (proto.MeResponse, 
 		return response, err
 	}
 	response.Group = group
+	if member.Status != proto.MemberApproved {
+		response.Group.OwnerID = ""
+		response.Members = append(response.Members, member)
+		return response, nil
+	}
 	rows, err := s.db.QueryContext(ctx, `SELECT `+memberColumns+` FROM members WHERE group_id = ? AND revoked_at = 0 ORDER BY created_at`, member.GroupID)
 	if err != nil {
 		return response, err

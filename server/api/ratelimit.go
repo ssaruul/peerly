@@ -26,13 +26,15 @@ func newRateLimiter(burst int, perMinute float64) *rateLimiter {
 }
 
 func clientIP(r *http.Request) string {
-	if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
-		first, _, _ := strings.Cut(forwarded, ",")
-		return strings.TrimSpace(first)
-	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
-		return r.RemoteAddr
+		host = r.RemoteAddr
+	}
+	parsed := net.ParseIP(host)
+	fromProxy := parsed != nil && parsed.IsLoopback()
+	if forwarded := r.Header.Get("X-Forwarded-For"); fromProxy && forwarded != "" {
+		entries := strings.Split(forwarded, ",")
+		return strings.TrimSpace(entries[len(entries)-1])
 	}
 	return host
 }

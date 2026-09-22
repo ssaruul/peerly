@@ -112,8 +112,8 @@ func TestHostHandoffOverHTTP(t *testing.T) {
 		t.Fatalf("pending member creating a world = %d", status)
 	}
 	_, payload = clientB.do("GET", "/me", nil, nil)
-	if me := decode[proto.MeResponse](t, payload); me.Member.Status != proto.MemberPending {
-		t.Fatalf("pending member /me = %s", payload)
+	if me := decode[proto.MeResponse](t, payload); me.Member.Status != proto.MemberPending || len(me.Members) != 1 || me.Group.OwnerID != "" {
+		t.Fatalf("pending member /me leaks the member list: %s", payload)
 	}
 	if status, _ := clientB.do("POST", "/members/"+sessionB.Member.ID+"/approve", nil, nil); status != http.StatusForbidden {
 		t.Fatalf("pending member approving itself = %d", status)
@@ -248,5 +248,32 @@ func TestJoinAttemptsAreRateLimited(t *testing.T) {
 	}
 	if status, _ := client.do("POST", "/groups/join", proto.JoinGroupRequest{InviteCode: "GUESSING", DisplayName: "x"}, map[string]string{"X-Forwarded-For": "203.0.113.10"}); status == http.StatusTooManyRequests {
 		t.Fatal("another address was limited too")
+	}
+	spoofed := 0
+	for index := range 40 {
+		header := map[string]string{"X-Forwarded-For": fmt.Sprintf("198.51.100.%d, 203.0.113.9", index)}
+		if status, _ := client.do("POST", "/groups/join", proto.JoinGroupRequest{InviteCode: "GUESSING", DisplayName: "x"}, header); status == http.StatusTooManyRequests {
+			spoofed++
+		}
+	}
+	if spoofed == 0 {
+		t.Fatal("rotating the forwarded address header bypassed the limiter")
+	}
+}
+
+func TestForwardedAddressIsIgnoredFromNonLoopbackPeers(t *testing.T) {
+	request := httptest.NewRequest(http.MethodPost, "/groups/join", nil)
+	request.RemoteAddr = "203.0.113.5:4444"
+	request.Header.Set("X-Forwarded-For", "10.0.0.1")
+	if got := clientIP(request); got != "203.0.113.5" {
+		t.Fatalf("direct peer with a forged header resolved to %s", got)
+	}
+	request.RemoteAddr = "127.0.0.1:4444"
+	if got := clientIP(request); got != "10.0.0.1" {
+		t.Fatalf("proxied request resolved to %s", got)
+	}
+	request.Header.Set("X-Forwarded-For", "1.2.3.4, 10.0.0.1")
+	if got := clientIP(request); got != "10.0.0.1" {
+		t.Fatalf("client-supplied first entry was trusted: %s", got)
 	}
 }
