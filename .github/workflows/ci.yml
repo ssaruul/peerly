@@ -1,0 +1,29 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - run: go test -race -count=1 -timeout 600s ./...
+
+  windows-build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go vet ./client/... ./proto/...
+      - run: go build -tags desktop,production -ldflags "-s -w -H windowsgui" -o peerly.exe ./client/app
+      - run: go build -o peerly-browser.exe ./client/web
+      - run: go build -o peerly-cli.exe ./client/cli

@@ -1,0 +1,38 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go test -count=1 -timeout 600s ./...
+      - run: make server-arm64 server-amd64 windows cli
+      - run: |
+          cd dist
+          sha256sum peerly.exe peerly-browser.exe peerly-cli.exe peerly-server-linux-arm64 peerly-server-linux-amd64 > SHA256SUMS.txt
+          cp -r ../deploy .
+          tar -czf peerly-server-deploy.tar.gz deploy
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/peerly.exe
+            dist/peerly-browser.exe
+            dist/peerly-cli.exe
+            dist/peerly-server-linux-arm64
+            dist/peerly-server-linux-amd64
+            dist/peerly-server-deploy.tar.gz
+            dist/SHA256SUMS.txt
+          body: |
+            Players: download `peerly.exe` (window) or `peerly-browser.exe` (runs in your browser). Windows will warn about an unknown program; choose More info, then Run anyway.
+
+            Server: download `peerly-server-linux-arm64` (Oracle ARM, Raspberry Pi) or `peerly-server-linux-amd64`, plus `peerly-server-deploy.tar.gz` for the installer, service file and Caddyfile. See the README.

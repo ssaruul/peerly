@@ -14,6 +14,12 @@ Someone in the group needs to run a tiny server. That can be almost any always-o
 
 If nobody in your group wants to do that, [SaveSync](https://www.savesync.games/) on Steam does a similar job for a few dollars per person and needs no server.
 
+## What you need
+
+- **Players**: Windows 10 or 11. `peerly.exe` needs Microsoft's WebView2 runtime, which is already on nearly every PC; `peerly-browser.exe` needs only a web browser.
+- **The friend who runs the server**: an always-on Linux machine reachable from the internet (the free Oracle Cloud ARM instance is enough) and a domain name pointing at it (a free DuckDNS name works).
+- **Building from source** (optional): Go 1.27 or newer. Ready-made programs are on the [Releases page](https://github.com/ssaruul/peerly/releases).
+
 ## Status: early
 
 peerly works in automated tests on Linux, including a test suite that clicks through the app in a real browser. It has **not yet been used on a real Windows PC with a real game by the author**. If you try it, please open an issue and say what happened, good or bad. Until then, use it with a world you have backed up yourself.
@@ -34,7 +40,7 @@ Think of the world as a library book. The server holds the book, and there is on
 
 You need Windows 10 or 11.
 
-1. Get `peerly.exe` (or `peerly-browser.exe`, which shows the same app in your web browser) from the person in your group who runs the server, or build it yourself, see below. Windows will warn that the program is unknown because it is not signed; choose *More info*, then *Run anyway*.
+1. Download `peerly.exe` (or `peerly-browser.exe`, which shows the same app in your web browser) from the [Releases page](https://github.com/ssaruul/peerly/releases). Windows will warn that the program is unknown because it is not signed; choose *More info*, then *Run anyway*.
 2. Ask the group owner for an **invite**. It contains the server address and an 8-character code. Each code works once and for one day.
 3. Open peerly, choose **Join a group**, paste the address and the code, type your name.
 4. Your screen says *Waiting for the group owner*. The owner sees your name and your PC's name and presses **Approve**. The screen updates by itself.
@@ -64,8 +70,8 @@ You need a Linux machine that is always on and reachable from the internet, and 
 
 You do not need to understand the server. You need to do these steps once.
 
-1. On your own PC, build the server program with `make server-arm64` (for Oracle's ARM machines) or `make server-amd64`. This needs Go installed. The file lands in `dist/`.
-2. Copy that file and the `deploy/` folder to the machine, then run `./install.sh ./peerly-server-linux-arm64` there. This creates a system user, starts the service, makes it start again after reboots, and prints an **admin key**. Keep that key; it is only needed to create a group and to rescue a group whose owner has vanished.
+1. Download `peerly-server-linux-arm64` (for Oracle's ARM machines) or `peerly-server-linux-amd64`, and `peerly-server-deploy.tar.gz`, from the [Releases page](https://github.com/ssaruul/peerly/releases). Or build them yourself with `make server-arm64`, which needs Go; the file lands in `dist/`.
+2. Copy the server file and the unpacked `deploy/` folder to the machine, then run `./install.sh ./peerly-server-linux-arm64` there. This creates a system user, starts the service, makes it start again after reboots, and prints an **admin key**. Keep that key; it is only needed to create a group and to rescue a group whose owner has vanished.
 3. Install [Caddy](https://caddyserver.com/), copy `deploy/Caddyfile` to `/etc/caddy/Caddyfile`, replace `saves.example.com` with your domain name, and reload Caddy. Caddy gives your server HTTPS automatically.
 4. On Oracle Cloud, open ports 80 and 443 in two places: the *security list* of your network in the web console, and the machine's own firewall. `install.sh` prints the exact commands.
 5. In peerly on your PC choose **Create a group**, enter your domain and the admin key. You are now the group owner. Invite friends from **Group and invites**.
@@ -122,7 +128,7 @@ Owners avoid this by handing the group over first: **Group and invites**, **Make
 
 ## For developers
 
-Go 1.27 or newer, nothing else. The interface is plain JavaScript embedded in the binary.
+Go 1.27 or newer, nothing else. The interface is plain JavaScript embedded in the binary. Every push runs the tests on Linux and compiles the Windows programs on a Windows runner; pushing a tag like `v0.1.0` builds all programs and publishes them as a GitHub Release.
 
 ```sh
 make test        # go vet + unit and integration tests with the race detector
