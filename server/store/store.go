@@ -33,7 +33,7 @@ var (
 
 const (
 	InviteLifetime = 24 * time.Hour
-	ActiveWindow   = 150 * time.Second
+	ActiveWindow   = 75 * time.Second
 )
 
 type LeaseHeldError struct {
@@ -233,7 +233,7 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
-	return &Store{db: db, Now: time.Now, LeaseTTL: 150 * time.Second, KeepMain: 20, KeepCheckpoints: 3, KeepForks: 30}, nil
+	return &Store{db: db, Now: time.Now, LeaseTTL: 3 * time.Minute, KeepMain: 20, KeepCheckpoints: 3, KeepForks: 30}, nil
 }
 
 func (s *Store) Close() error {

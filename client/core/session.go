@@ -65,7 +65,7 @@ type Timings struct {
 
 func DefaultTimings() Timings {
 	return Timings{
-		Heartbeat:       60 * time.Second,
+		Heartbeat:       30 * time.Second,
 		Watch:           5 * time.Second,
 		Quiet:           20 * time.Second,
 		Settle:          5 * time.Second,
