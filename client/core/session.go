@@ -65,7 +65,7 @@ type Timings struct {
 
 func DefaultTimings() Timings {
 	return Timings{
-		Heartbeat:       30 * time.Second,
+		Heartbeat:       60 * time.Second,
 		Watch:           5 * time.Second,
 		Quiet:           20 * time.Second,
 		Settle:          5 * time.Second,
@@ -246,7 +246,7 @@ func (s *Session) Host(ctx context.Context) error {
 		releaseContext, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		if err := s.Client.ReleaseLease(releaseContext, s.WorldID, lease.FencingToken); err != nil {
-			s.emit(EventWarning, "could not tell the server you are done, the world frees itself in a few minutes: %v", err)
+			s.emit(EventWarning, "could not tell the server you are done, the world frees itself within five minutes: %v", err)
 			return
 		}
 		s.emit(EventReleased, "done, anyone in the group can host now")

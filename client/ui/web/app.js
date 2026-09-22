@@ -547,7 +547,7 @@ function render() {
 }
 
 function checkpointSelect(current) {
-  const options = [[0, "Every 10 minutes (default)"], [30, "Every 30 minutes"], [60, "Every hour"], [-1, "Off, upload only when the game closes"]];
+  const options = [[0, "Every 15 minutes (default)"], [30, "Every 30 minutes"], [60, "Every hour"], [-1, "Off, upload only when the game closes"]];
   return h("label", {}, "Backups while you play",
     h("select", { name: "checkpoint_minutes" }, options.map(([value, label]) => h("option", { value, selected: value === (current || 0) }, label))),
     h("span", { class: "hint" }, "Protects the group if your PC dies mid-session. Uses your upload bandwidth, so pick a longer interval if friends lag when it runs."));

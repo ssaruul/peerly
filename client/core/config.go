@@ -16,7 +16,7 @@ import (
 	"peerly/proto"
 )
 
-const defaultCheckpointMinutes = 10
+const defaultCheckpointMinutes = 15
 
 var ErrAlreadyRunning = errors.New("peerly is already running on this PC, maybe as another window or as peerly-browser. Close it first")
 

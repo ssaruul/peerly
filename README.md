@@ -24,8 +24,8 @@ Think of the world as a library book. The server holds the book, and there is on
 
 1. You press **Host**. If nobody has the lease, you get it. If a friend already has it, you are told so and shown the code to join their game.
 2. Your app downloads the newest save and puts it where the game expects it. The files that were there before are kept in a backup folder.
-3. The game starts. While it runs, your app pings the server every 30 seconds to say "still here". If your PC dies, the pings stop and after 3 minutes the server frees the world for the others.
-4. Every 10 minutes (you can change or disable this), after the game has been quiet for a moment, a backup of the world is uploaded, so a crash costs the group at most those minutes.
+3. The game starts. While it runs, your app pings the server once a minute to say "still here". If your PC dies, the pings stop and after 5 minutes the server frees the world for the others.
+4. Every 15 minutes (you can change or disable this), once the save files have stopped changing for 20 seconds so the game is not caught mid-write, a backup of the world is uploaded. A crash costs the group at most those minutes.
 5. When you close the game, the save is uploaded and the lease is released. The next host gets exactly what you left.
 
 **What if something goes wrong?** Nothing is ever overwritten silently. If someone played a version of the world that is not the current one, for example because they played offline or their connection dropped and a friend took over, that version is kept as a **separate branch**. The group opens **History** and decides which version should be the current world. Older versions stay in History too, so a bad decision can be undone.
@@ -50,7 +50,7 @@ From then on: press **Host** to play, close the game when done, wait until the w
 
 **What if two of us press Host at the same time?** The server gives the lease to the first request. The other person is told who is hosting.
 
-**What if my PC crashes while hosting?** The world is freed after 3 minutes. The group continues from the last mid-session backup, at most 10 minutes old. When you are back, peerly uploads your last state as a separate branch so nothing is lost.
+**What if my PC crashes while hosting?** The world is freed after 5 minutes. The group continues from the last mid-session backup, at most 15 minutes old. When you are back, peerly uploads your last state as a separate branch so nothing is lost.
 
 **What if my internet drops for a while during a session?** peerly keeps trying to ping and to upload in the background and tells you so. As long as no friend took over hosting in the meantime, your session continues on the current world. If someone did take over, your progress becomes a separate branch.
 
@@ -101,7 +101,7 @@ Owners avoid this by handing the group over first: **Group and invites**, **Make
 - Progress made outside a hosted session is never pushed over the group's world silently. You are asked, and if someone else hosted in between it always becomes a branch.
 - A launch command suggested by whoever added the world never runs on your PC unless you accept it yourself.
 - Joining needs an invite that works once, and the owner's approval. Invite codes cannot be guessed because attempts are limited.
-- One PC runs one copy of peerly, and the server does not let the same person host the same world from two places at once.
+- One PC runs one copy of peerly, and the server does not let the same person host the same world from two places at once. After a crash, the restarted app takes over by itself a few minutes later.
 
 ## What it does not protect you from
 
