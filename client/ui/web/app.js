@@ -630,6 +630,66 @@ function renderSurvey(survey, target) {
   target.replaceChildren(...lines);
 }
 
+function escapeWorldName(worldName) {
+  return worldName.replace(/[\\*?\[]/g, "\\$&").replaceAll(",", "?");
+}
+
+function livePreview(form, worldID, values) {
+  const preview = h("div", { class: "preview stack tight" }, h("p", { class: "muted small" }, "Checking the folder"));
+  let timer = 0;
+  let run = 0;
+  const refresh = () => {
+    clearTimeout(timer);
+    timer = setTimeout(async () => {
+      const current = ++run;
+      try {
+        const survey = await api("POST", `/worlds/${worldID}/preview`, values());
+        if (current === run) renderSurvey(survey, preview);
+      } catch (error) {
+        if (current === run) preview.replaceChildren(h("p", { class: "banner" }, error.message));
+      }
+    }, 350);
+  };
+  form.addEventListener("input", refresh);
+  refresh();
+  return preview;
+}
+
+function defaultsFields(values) {
+  return [
+    field("Save folder", "save_path", values.save_path, "C:\\Users\\you\\AppData\\...", { hint: "Where the game keeps its worlds. %LOCALAPPDATA% and similar are understood and resolve on each PC." }),
+    field("Files that belong to this world", "include", values.include, "{world}.*", { hint: "Comma separated, * is a wildcard, ! excludes. {world} is replaced by the world name." }),
+    field("Launch command or steam:// link", "launch", values.launch, "optional", {}),
+    field("Game process name", "process", values.process, "game.exe", {}),
+  ];
+}
+
+function openEditWorld(view) {
+  const world = view.status.world;
+  const form = h("form", { class: "stack", onsubmit: async (event) => {
+    event.preventDefault();
+    const values = formValues(form);
+    const saved = await act("edit-world", () => api("PATCH", `/worlds/${world.id}`, {
+      game_name: values.game_name,
+      default_save_path: values.save_path,
+      default_launch: values.launch,
+      default_process: values.process,
+      default_include: values.include.replaceAll("{world}", escapeWorldName(world.name)),
+    }), "Group defaults updated");
+    if (saved) closeDialog();
+  } });
+  appendAll(form,
+    h("h2", {}, `Edit ${world.name} for the group`),
+    h("p", { class: "small muted" }, "These defaults are handed to every member who has not checked their own settings yet. Members who already confirmed theirs keep them."),
+    field("Game name", "game_name", world.game_name, "", { maxlength: 64 }),
+    defaultsFields({ save_path: world.default_save_path, include: world.default_include, launch: world.default_launch, process: world.default_process }),
+    livePreview(form, world.id, () => ({ save_path: form.elements.save_path.value, include: form.elements.include.value.replaceAll("{world}", escapeWorldName(world.name)) })),
+    h("p", { class: "small muted" }, "The preview checks the folder and filter on this PC; on other PCs the folder resolves to their own user."),
+    h("div", { class: "row" }, h("button", { class: "primary", type: "submit" }, "Save for the group"), h("button", { type: "button", onclick: () => openSettings(view) }, "Back")),
+  );
+  showDialog(form);
+}
+
 function settingsForm(view, values, intent) {
   const world = view.status.world;
   const preview = h("div", { class: "preview stack tight" }, h("p", { class: "muted small" }, "Checking the folder"));
@@ -681,13 +741,13 @@ function openSettings(view, intent) {
     h("div", { class: "row" },
       h("button", { class: "primary", type: "submit" }, intent ? "Looks right, continue" : "Save"),
       h("button", { type: "button", onclick: closeDialog }, "Cancel")),
-    view.can_delete ? h("button", { type: "button", class: "danger", onclick: async () => {
+    view.can_delete ? h("div", { class: "row" }, h("button", { type: "button", onclick: () => openEditWorld(view) }, "Edit world for the group"), h("button", { type: "button", class: "danger", onclick: async () => {
       const sure = await ask(`Delete ${world.name} for the whole group?`, [
         "Every save of this world on the server is deleted for everyone. The game files on each PC are not touched.",
         "This cannot be undone.",
       ], "Delete world", true);
       if (sure) act("delete-world", () => api("DELETE", `/worlds/${world.id}`), world.name + " was deleted");
-    } }, "Delete world") : null,
+    } }, "Delete world")) : null,
   ));
   showDialog(
     h("h2", {}, intent ? `Check ${world.name} on this PC` : `${world.name} on this PC`),
@@ -706,7 +766,7 @@ function openNewWorld() {
     event.preventDefault();
     const values = formValues(form);
     const worldName = values.name.trim();
-    const escaped = worldName.replace(/[\\*?\[]/g, "\\$&").replaceAll(",", "?");
+    const escaped = escapeWorldName(worldName);
     let created = null;
     const succeeded = await act("new-world", async () => {
       created = await api("POST", "/worlds", {
@@ -736,11 +796,9 @@ function openNewWorld() {
     note,
     field("World name, exactly as the save is named in the game", "name", "", "MyWorld", { required: true, maxlength: 64 }),
     field("Game name", "game_name", "", "", { maxlength: 64 }),
-    field("Save folder", "save_path", "", "C:\\Users\\you\\AppData\\...", {}),
-    field("Files that belong to this world", "include", "", "{world}.*", { hint: "{world} is replaced by the world name." }),
-    field("Launch command or steam:// link", "launch", "", "optional", {}),
-    field("Game process name", "process", "", "game.exe", {}),
-    h("p", { class: "small muted" }, "These are suggestions for the group. Next you check them against the real files on this PC, and every friend does the same on theirs."),
+    defaultsFields({}),
+    livePreview(form, "new", () => ({ save_path: form.elements.save_path.value, include: form.elements.include.value.replaceAll("{world}", escapeWorldName(form.elements.name.value.trim())) })),
+    h("p", { class: "small muted" }, "These are suggestions for the group. The preview shows what they select on this PC; every friend checks them on theirs. They can be changed later with Edit world."),
     h("div", { class: "row" }, h("button", { class: "primary", type: "submit" }, "Add world"), h("button", { type: "button", onclick: closeDialog }, "Cancel")),
   );
   showDialog(form);

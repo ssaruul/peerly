@@ -116,6 +116,7 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("POST /api/members/{id}/owner", a.transferOwnership)
 	mux.HandleFunc("DELETE /api/members/{id}", a.removeMember)
 	mux.HandleFunc("POST /api/worlds", a.createWorld)
+	mux.HandleFunc("PATCH /api/worlds/{id}", a.updateWorld)
 	mux.HandleFunc("DELETE /api/worlds/{id}", a.deleteWorld)
 	mux.HandleFunc("POST /api/worlds/{id}/preview", a.preview)
 	mux.HandleFunc("GET /api/worlds/{id}/precheck", a.precheck)
@@ -507,6 +508,22 @@ func (a *App) createWorld(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, world)
+}
+
+func (a *App) updateWorld(w http.ResponseWriter, r *http.Request) {
+	request := proto.UpdateWorldRequest{}
+	if !decode(w, r, &request) {
+		return
+	}
+	world, err := a.client().UpdateWorld(r.Context(), r.PathValue("id"), request)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	a.mutex.Lock()
+	a.cachedStatuses = nil
+	a.mutex.Unlock()
+	writeJSON(w, http.StatusOK, world)
 }
 
 func (a *App) deleteWorld(w http.ResponseWriter, r *http.Request) {

@@ -54,6 +54,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /members/{id}", s.auth(s.revokeMember))
 	mux.HandleFunc("GET /worlds", s.auth(s.listWorlds))
 	mux.HandleFunc("POST /worlds", s.auth(s.createWorld))
+	mux.HandleFunc("PATCH /worlds/{id}", s.auth(s.updateWorld))
 	mux.HandleFunc("DELETE /worlds/{id}", s.auth(s.deleteWorld))
 	mux.HandleFunc("POST /worlds/{id}/lease", s.auth(s.acquireLease))
 	mux.HandleFunc("PUT /worlds/{id}/lease", s.auth(s.heartbeat))
@@ -358,6 +359,30 @@ func (s *Server) createWorld(w http.ResponseWriter, r *http.Request, member prot
 	}
 	log.Printf("%q added world %q (%s)", member.DisplayName, world.Name, world.ID)
 	writeJSON(w, http.StatusCreated, world)
+}
+
+func (s *Server) updateWorld(w http.ResponseWriter, r *http.Request, member proto.Member) {
+	request := proto.UpdateWorldRequest{}
+	if !readJSON(w, r, &request) {
+		return
+	}
+	request.GameName = strings.TrimSpace(request.GameName)
+	if tooLong(w, maxNameLength, map[string]string{"game name": request.GameName}) {
+		return
+	}
+	if tooLong(w, maxSettingLength, map[string]string{
+		"save folder": request.DefaultSavePath, "launch command": request.DefaultLaunch,
+		"process name": request.DefaultProcess, "file filter": request.DefaultInclude,
+	}) {
+		return
+	}
+	world, err := s.Store.UpdateWorld(r.Context(), member, r.PathValue("id"), request)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	log.Printf("%q changed the defaults of world %q (%s)", member.DisplayName, world.Name, world.ID)
+	writeJSON(w, http.StatusOK, world)
 }
 
 func (s *Server) deleteWorld(w http.ResponseWriter, r *http.Request, member proto.Member) {

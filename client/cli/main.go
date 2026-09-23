@@ -20,6 +20,7 @@ const usage = `peerly-cli <command> [flags]
   status
   create-world   -name NAME -game GAME [-save-path P] [-launch CMD] [-process EXE] [-include GLOBS]
   configure      -world NAME [-save-path P] [-launch CMD] [-process EXE] [-include GLOBS] [-checkpoint-minutes N]
+  edit-world     -world NAME [-game G] [-save-path P] [-launch CMD] [-process EXE] [-include GLOBS]   (creator or owner) change the group defaults
   host           -world NAME [-join-info TEXT]
   sync           -world NAME
   history        -world NAME
@@ -379,6 +380,28 @@ func run(command string, args []string) error {
 		return nil
 	case "delete-world":
 		return client.DeleteWorld(ctx, world.ID)
+	case "edit-world":
+		request := proto.UpdateWorldRequest{GameName: world.GameName, DefaultSavePath: world.DefaultSavePath, DefaultLaunch: world.DefaultLaunch, DefaultProcess: world.DefaultProcess, DefaultInclude: world.DefaultInclude}
+		flags.Visit(func(given *flag.Flag) {
+			switch given.Name {
+			case "game":
+				request.GameName = *gameName
+			case "save-path":
+				request.DefaultSavePath = *savePath
+			case "launch":
+				request.DefaultLaunch = *launch
+			case "process":
+				request.DefaultProcess = *process
+			case "include":
+				request.DefaultInclude = *include
+			}
+		})
+		updated, err := client.UpdateWorld(ctx, world.ID, request)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("defaults of %s updated: folder %q, files %q, launch %q, process %q\n", updated.Name, updated.DefaultSavePath, updated.DefaultInclude, updated.DefaultLaunch, updated.DefaultProcess)
+		return nil
 	}
 	fmt.Fprint(os.Stderr, usage)
 	return fmt.Errorf("unknown command %q", command)

@@ -23,7 +23,7 @@ var (
 	ErrNotFork   = errors.New("only branch saves can be deleted, saves on main are kept as history")
 	ErrIsHead    = errors.New("this save is already the current world")
 	ErrForbidden = errors.New("only the group owner can do this")
-	ErrNotYours  = errors.New("only the person who added this world or the group owner can delete it")
+	ErrNotYours  = errors.New("only the person who added this world or the group owner can change or delete it")
 	ErrNameTaken = errors.New("a world with this name already exists in the group")
 	ErrSelf      = errors.New("the owner cannot remove themselves")
 	ErrNotAuthor = errors.New("only the person who made this branch save or the group owner can delete it")
@@ -578,6 +578,35 @@ func (s *Store) CreateWorld(ctx context.Context, member proto.Member, request pr
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		world.ID, world.GroupID, world.Name, world.GameName, world.DefaultSavePath, world.DefaultLaunch,
 		world.DefaultProcess, world.DefaultInclude, world.CreatedBy, s.nowMillis()); err != nil {
+		return proto.World{}, err
+	}
+	return world, tx.Commit()
+}
+
+func (s *Store) UpdateWorld(ctx context.Context, member proto.Member, worldID string, request proto.UpdateWorldRequest) (proto.World, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return proto.World{}, err
+	}
+	defer tx.Rollback()
+	world, err := getWorld(ctx, tx, worldID, member.GroupID)
+	if err != nil {
+		return proto.World{}, err
+	}
+	group, err := getGroup(ctx, tx, member.GroupID)
+	if err != nil {
+		return proto.World{}, err
+	}
+	if world.CreatedBy != member.ID && group.OwnerID != member.ID {
+		return proto.World{}, ErrNotYours
+	}
+	world.GameName = request.GameName
+	world.DefaultSavePath = request.DefaultSavePath
+	world.DefaultLaunch = request.DefaultLaunch
+	world.DefaultProcess = request.DefaultProcess
+	world.DefaultInclude = request.DefaultInclude
+	if _, err := tx.ExecContext(ctx, `UPDATE worlds SET game_name = ?, default_save_path = ?, default_launch = ?, default_process = ?, default_include = ? WHERE id = ?`,
+		world.GameName, world.DefaultSavePath, world.DefaultLaunch, world.DefaultProcess, world.DefaultInclude, worldID); err != nil {
 		return proto.World{}, err
 	}
 	return world, tx.Commit()

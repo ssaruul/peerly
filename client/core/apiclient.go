@@ -273,6 +273,11 @@ func (c *APIClient) PinRevision(ctx context.Context, revisionID string, pinned b
 	return revision, c.call(ctx, http.MethodPut, "/revisions/"+revisionID+"/pin", proto.PinRequest{Pinned: pinned}, &revision)
 }
 
+func (c *APIClient) UpdateWorld(ctx context.Context, worldID string, request proto.UpdateWorldRequest) (proto.World, error) {
+	world := proto.World{}
+	return world, c.call(ctx, http.MethodPatch, "/worlds/"+worldID, request, &world)
+}
+
 func (c *APIClient) DeleteWorld(ctx context.Context, worldID string) error {
 	return c.call(ctx, http.MethodDelete, "/worlds/"+worldID, nil, nil)
 }

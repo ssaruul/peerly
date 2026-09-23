@@ -1080,3 +1080,28 @@ func TestASilentHostIsReportedUntilSomeoneTakesOverOrTheyReturn(t *testing.T) {
 		t.Fatal("a released lease must not linger as a silent host")
 	}
 }
+
+func TestWorldDefaultsCanBeEditedByCreatorOrOwner(t *testing.T) {
+	f := newFixture(t, 3)
+	ctx := context.Background()
+	owner, creator, other := f.members[0], f.members[1], f.members[2]
+	world, _ := f.store.CreateWorld(ctx, creator, proto.CreateWorldRequest{Name: "original world", DefaultInclude: "original world.sav"})
+	fix := proto.UpdateWorldRequest{GameName: "Dragonwilds", DefaultSavePath: `%LOCALAPPDATA%\\RSDragonwilds\\Saved\\SaveGames`, DefaultInclude: "gays.sav", DefaultProcess: "RSDragonwilds-Win64-Shipping.exe"}
+	if _, err := f.store.UpdateWorld(ctx, other, world.ID, fix); !errors.Is(err, ErrNotYours) {
+		t.Fatalf("a member who neither created the world nor owns the group could edit it: %v", err)
+	}
+	updated, err := f.store.UpdateWorld(ctx, creator, world.ID, fix)
+	if err != nil || updated.DefaultInclude != "gays.sav" || updated.Name != "original world" {
+		t.Fatalf("creator edit: %+v err %v", updated, err)
+	}
+	fix.DefaultInclude = "gays.*"
+	if _, err := f.store.UpdateWorld(ctx, owner, world.ID, fix); err != nil {
+		t.Fatalf("owner edit: %v", err)
+	}
+	statuses, _ := f.store.ListWorlds(ctx, other)
+	for _, status := range statuses {
+		if status.World.ID == world.ID && (status.World.DefaultInclude != "gays.*" || status.World.HeadRevisionID != "") {
+			t.Fatalf("edited defaults not visible or history touched: %+v", status.World)
+		}
+	}
+}

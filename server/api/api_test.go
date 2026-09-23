@@ -218,6 +218,13 @@ func TestHostHandoffOverHTTP(t *testing.T) {
 	if groups := decode[[]proto.AdminGroup](t, payload); status != http.StatusOK || len(groups) != 2 {
 		t.Fatalf("admin listing = %d %s", status, payload)
 	}
+	if status, _ := clientB.do("PATCH", "/worlds/"+world.ID, proto.UpdateWorldRequest{DefaultInclude: "x"}, nil); status != http.StatusForbidden {
+		t.Fatalf("non-creator editing world defaults = %d", status)
+	}
+	status, payload = clientA.do("PATCH", "/worlds/"+world.ID, proto.UpdateWorldRequest{GameName: "valheim", DefaultInclude: "base.*"}, nil)
+	if edited := decode[proto.World](t, payload); status != http.StatusOK || edited.DefaultInclude != "base.*" {
+		t.Fatalf("creator editing world defaults = %d %s", status, payload)
+	}
 	if status, _ := clientB.do("POST", "/groups/owner", proto.TransferRequest{MemberID: sessionB.Member.ID}, nil); status != http.StatusForbidden {
 		t.Fatalf("member making themselves owner = %d", status)
 	}

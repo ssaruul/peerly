@@ -111,6 +111,14 @@ type CreateWorldRequest struct {
 	DefaultInclude  string `json:"default_include"`
 }
 
+type UpdateWorldRequest struct {
+	GameName        string `json:"game_name"`
+	DefaultSavePath string `json:"default_save_path"`
+	DefaultLaunch   string `json:"default_launch"`
+	DefaultProcess  string `json:"default_process"`
+	DefaultInclude  string `json:"default_include"`
+}
+
 type LeaseRequest struct {
 	FencingToken int64 `json:"fencing_token"`
 }
