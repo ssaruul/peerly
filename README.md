@@ -40,7 +40,7 @@ Think of the world as a library book. The server holds the book, and there is on
 
 You need Windows 10 or 11.
 
-1. Download `peerly.exe` (or `peerly-browser.exe`, which shows the same app in your web browser) from the [Releases page](https://github.com/ssaruul/peerly/releases). Windows will warn that the program is unknown because it is not signed; choose *More info*, then *Run anyway*.
+1. Download `peerly-setup.exe` from the [Releases page](https://github.com/ssaruul/peerly/releases) and run it. Windows will warn that the program is unknown because it is not signed; choose *More info*, then *Run anyway*. It installs peerly for you only, without asking for administrator rights, and adds it to the Start menu, so from then on you open it by typing *peerly* into Windows search. (If you would rather not install anything, `peerly.exe` is the same app as a single file, and `peerly-browser.exe` shows it in your web browser.)
 2. Ask the group owner for an **invite**. It contains the server address and an 8-character code. Each code works once and for one day.
 3. Open peerly, choose **Join a group**, paste the address and the code, type your name.
 4. Your screen says *Waiting for the group owner*. The owner sees your name and your PC's name and presses **Approve**. The screen updates by itself.
@@ -51,6 +51,8 @@ From then on: press **Host** to play, close the game when done, wait until the w
 ### Questions players ask
 
 **Do all my friends need peerly?** Only those who want to host. Friends who only ever join someone else's game do not need it. Their progress is inside the host's world file, which the host's peerly uploads.
+
+**How do I update or remove peerly?** To update, run the newer `peerly-setup.exe`; it asks you to close peerly first if it is open, and never closes it for you, because you might be hosting. To remove it, use *Settings*, *Apps*, *Installed apps*, *peerly*, *Uninstall*. Your group membership, your settings and peerly's backups of your save files stay in `%AppData%\peerly` either way, so reinstalling picks up where you left off; delete that folder yourself if you want them gone.
 
 **Do I have to find my save files myself?** Usually not. The person who adds the world picks the game from a list, and the folder is pre-filled for everyone. You only confirm that the files shown are the right ones. The entries for Valheim and RuneScape: Dragonwilds were checked against public documentation, not yet on a real PC.
 
@@ -128,14 +130,18 @@ Owners avoid this by handing the group over first: **Group and invites**, **Make
 
 ## For developers
 
-Go 1.27 or newer, nothing else. The interface is plain JavaScript embedded in the binary. Every push runs the tests on Linux and compiles the Windows programs on a Windows runner; pushing a tag like `v0.1.0` builds all programs and publishes them as a GitHub Release.
+Go 1.27 or newer, nothing else; the Windows installer additionally needs [NSIS](https://nsis.sourceforge.io/), which on Linux is `apt install nsis`. The interface is plain JavaScript embedded in the binary. Every push runs the tests on Linux, compiles the Windows programs on a Windows runner and builds the installer; pushing a tag like `v0.2.0` builds all programs and publishes them as a GitHub Release, with the installer's version taken from the tag.
 
 ```sh
 make test        # go vet + unit and integration tests with the race detector
 make e2e         # browser-driven suite, needs python3 with playwright and Google Chrome
 make windows     # peerly.exe, peerly-browser.exe, peerly-cli.exe into dist/
+make installer   # peerly-setup.exe into dist/, needs NSIS; set VERSION=x.y.z
 make all         # tests plus every binary
+make icon        # redraw the icon and regenerate client/app/rsrc_windows_amd64.syso, needs python3 with Pillow
 ```
+
+The icon is drawn by `client/app/winres/make_icon.py`. It is embedded into `peerly.exe` through the committed `client/app/rsrc_windows_amd64.syso`, which `go build` links in automatically, and served to the browser as `client/ui/web/favicon.svg`.
 
 ```
 proto/          request and response types shared by server and client
@@ -143,9 +149,10 @@ server/         HTTP API, SQLite store (lease, revisions, retention, migrations)
 client/core/    sync logic: snapshot, transactional restore, host session, game detection
 client/ui/      local web interface and its JSON API
 client/web/     runs the interface in the browser
-client/app/     runs the interface in a Wails window (Windows)
+client/app/     runs the interface in a Wails window (Windows), plus its icon in winres/
 client/cli/     command line client
-deploy/         systemd unit, Caddyfile, installer, env.example
+installer/      NSIS script for peerly-setup.exe
+deploy/         server: systemd unit, Caddyfile, install.sh, env.example
 e2e/            browser-driven end to end suite
 ```
 

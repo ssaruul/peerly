@@ -27,3 +27,14 @@ jobs:
       - run: go build -tags desktop,production -ldflags "-s -w -H windowsgui" -o peerly.exe ./client/app
       - run: go build -o peerly-browser.exe ./client/web
       - run: go build -o peerly-cli.exe ./client/cli
+
+  installer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: sudo apt-get update && sudo apt-get install -y nsis
+      - run: make installer
+      - run: test -s dist/peerly-setup.exe
